@@ -11,7 +11,7 @@
 
 import process from "node:process";
 import { writeSync } from "node:fs";
-import { isatty } from "node:tty";
+import { isatty, WriteStream } from "node:tty";
 
 const BAR_WIDTH = 10;
 const SNAKE_LEN = 3;
@@ -23,7 +23,7 @@ const TICK_INTERVAL = 80;
  * is not a real WriteStream so `.fd` is undefined — but the underlying fd 2
  * is still inherited from the parent process and works with writeSync/isatty.
  */
-const STDERR_FD: number = (process.stderr as { fd?: number }).fd ?? 2;
+const STDERR_FD: number = process.stderr.fd ?? 2;
 
 // ── ANSI helpers ────────────────────────────────────────────────
 
@@ -68,8 +68,23 @@ const state: ProgressState = {
 
 const isTTY: boolean = isatty(STDERR_FD);
 
+let stderrStream: { write(str: string): void };
+if (process.stderr.fd !== undefined) {
+  stderrStream = process.stderr;
+} else if (isTTY) {
+  try {
+    // In the loader worker thread on Windows, writeSync(2, utf8_string) prints mojibake.
+    // Creating a real WriteStream invokes uv_tty_init which properly handles Windows console APIs.
+    stderrStream = new WriteStream(STDERR_FD);
+  } catch {
+    stderrStream = { write: (str) => writeSync(STDERR_FD, str) };
+  }
+} else {
+  stderrStream = { write: (str) => writeSync(STDERR_FD, str) };
+}
+
 function writeStderr(str: string): void {
-  writeSync(STDERR_FD, str);
+  stderrStream.write(str);
 }
 
 // ── Formatting ──────────────────────────────────────────────────
