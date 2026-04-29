@@ -1,31 +1,49 @@
 {
-  "name": "nodejs-minimal-ts-template",
-  "private": true,
+  "name": "node-url-import",
   "version": "0.1.0",
   "type": "module",
-  "description": "",
-  "main": "src/index.ts",
+  "description": "Node.js hook to import modules from HTTP(S) URLs",
+  "main": "dist/index.js",
   "files": [
     "src",
     "dist"
   ],
-  "scripts": {
-    "cli": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/index.ts",
-    "dev": "node --experimental-transform-types --env-file=.env --watch src/index.ts",
-    "test": "node --experimental-transform-types --test",
-    "build": "tsc --declaration --sourceMap"
+  "exports": {
+    ".": {
+      "default": "./dist/index.js"
+    },
+    "./loader": {
+      "default": "./dist/loader.js"
+    },
+    "./register": {
+      "default": "./dist/register.js"
+    }
   },
-  "keywords": [],
-  "author": "",
-  "license": "",
+  "bin": {
+    "node-url-import": "./dist/cli.js"
+  },
+  "scripts": {
+    "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./src/register.ts --test src/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --declaration --sourceMap",
+    "cli": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/cli.ts"
+  },
+  "keywords": [
+    "node",
+    "http",
+    "import",
+    "require",
+    "loader",
+    "hook",
+    "esm",
+    "url",
+    "deno"
+  ],
   "engines": {
     "node": ">=22"
   },
-  "bin": {
-    "cli-name": "./src/cli.ts"
-  },
   "devDependencies": {
-    "@types/node": "^22.18.12",
+    "@types/node": "^22.19.17",
     "typescript": "^5.9.3"
   }
 }
