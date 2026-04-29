@@ -63,14 +63,48 @@ function inferFormat(url: string, contentType: string): ModuleFormat {
   return "module";
 }
 
+/**
+ * Strip `npm:` prefix and optional `@version` from an npm specifier.
+ *   npm:ms@2.1.3           → ms
+ *   npm:@scope/pkg@1.0.0   → @scope/pkg
+ *   npm:@scope/pkg@1.0.0/s → @scope/pkg/s
+ *   npm:lodash-es          → lodash-es
+ */
+export function stripNpmSpecifier(specifier: string): string {
+  let bare = specifier.slice(4); // remove "npm:"
+
+  // For scoped packages (@scope/pkg@version), the version @ is after the first /
+  // For unscoped packages (pkg@version), the version @ is the first @
+  const isScoped = bare.startsWith("@");
+  const versionAtIdx = isScoped
+    ? bare.indexOf("@", bare.indexOf("/") + 1)
+    : bare.indexOf("@");
+
+  if (versionAtIdx > 0) {
+    const afterAt = bare.indexOf("/", versionAtIdx);
+    if (afterAt > 0) {
+      // @scope/pkg@version/subpath → @scope/pkg/subpath
+      bare = bare.slice(0, versionAtIdx) + bare.slice(afterAt);
+    } else {
+      // @scope/pkg@version → @scope/pkg
+      bare = bare.slice(0, versionAtIdx);
+    }
+  }
+
+  return bare;
+}
+
 export async function resolve(
   specifier: string,
   context: ResolveContext,
   nextResolve: NextResolve,
 ): Promise<ResolveResult> {
-  // npm: specifier — strip the prefix and let Node resolve from node_modules.
+  // npm: specifier — strip the prefix and version, let Node resolve from node_modules.
+  //   npm:ms@2.1.3         → ms
+  //   npm:@scope/pkg@1.0.0 → @scope/pkg
+  //   npm:@scope/pkg@1.0.0/sub → @scope/pkg/sub
   if (specifier.startsWith("npm:")) {
-    return nextResolve(specifier.slice(4), context);
+    return nextResolve(stripNpmSpecifier(specifier), context);
   }
 
   // Direct HTTP(S) URL
