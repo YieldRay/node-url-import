@@ -1,7 +1,7 @@
 import { readCache, writeCache } from "./cache.ts";
 import type { CacheEntry } from "./cache.ts";
 import { NAME, MAX_REDIRECTS } from "./constants.ts";
-import { verifyLock, isLockEnabled } from "./lock.ts";
+import { verifyLock, recordRedirect, isLockEnabled } from "./lock.ts";
 import {
   downloadStart,
   downloadAdd,
@@ -17,7 +17,10 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
   const cached = reload ? null : await readCache(url);
 
   if (cached) {
-    if (isLockEnabled()) await verifyLock(url, cached.source);
+    if (isLockEnabled()) {
+      await recordRedirect(url, cached.finalUrl);
+      await verifyLock(cached.finalUrl, cached.source);
+    }
     return cached;
   }
 
@@ -60,7 +63,10 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
 
     await writeCache(url, source, contentType, currentUrl);
 
-    if (isLockEnabled()) await verifyLock(url, source);
+    if (isLockEnabled()) {
+      await recordRedirect(url, currentUrl);
+      await verifyLock(currentUrl, source);
+    }
 
     downloadDone();
 

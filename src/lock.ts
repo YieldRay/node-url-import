@@ -4,8 +4,11 @@
  * Uses the same format as Deno's lock file:
  * {
  *   "version": "5",
+ *   "redirects": {
+ *     "https://raw.esm.sh/armor64/dist/cli.js": "https://raw.esm.sh/armor64@0.1.0/dist/cli.js"
+ *   },
  *   "remote": {
- *     "https://esm.sh/lodash-es@4.17.21": "<sha256-hex>"
+ *     "https://raw.esm.sh/armor64@0.1.0/dist/cli.js": "<sha256-hex>"
  *   }
  * }
  *
@@ -21,6 +24,7 @@ const LOCK_VERSION = "5";
 
 interface LockFileData {
   version: string;
+  redirects: Record<string, string>;
   remote: Record<string, string>;
 }
 
@@ -44,16 +48,17 @@ async function loadLockFile(): Promise<LockFileData> {
       if (parsed && typeof parsed.remote === "object") {
         lockData = {
           version: parsed.version || LOCK_VERSION,
+          redirects: parsed.redirects || {},
           remote: parsed.remote,
         };
       } else {
-        lockData = { version: LOCK_VERSION, remote: {} };
+        lockData = { version: LOCK_VERSION, redirects: {}, remote: {} };
       }
     } catch {
-      lockData = { version: LOCK_VERSION, remote: {} };
+      lockData = { version: LOCK_VERSION, redirects: {}, remote: {} };
     }
   } else {
-    lockData = { version: LOCK_VERSION, remote: {} };
+    lockData = { version: LOCK_VERSION, redirects: {}, remote: {} };
   }
 
   return lockData;
@@ -61,7 +66,13 @@ async function loadLockFile(): Promise<LockFileData> {
 
 async function flushLockFile(): Promise<void> {
   if (!lockPath || !dirty || !lockData) return;
-  const json = JSON.stringify(lockData, null, 2) + "\n";
+  // Output sections in Deno's order: version, redirects (if non-empty), remote
+  const out: Record<string, unknown> = { version: lockData.version };
+  if (Object.keys(lockData.redirects).length > 0) {
+    out.redirects = lockData.redirects;
+  }
+  out.remote = lockData.remote;
+  const json = JSON.stringify(out, null, 2) + "\n";
   await writeFile(lockPath, json, "utf-8");
   dirty = false;
 }
@@ -70,6 +81,35 @@ export function isLockEnabled(): boolean {
   return lockPath !== null;
 }
 
+/**
+ * Record a redirect in the lock file (original URL → final URL).
+ * Only records when they differ.
+ */
+export async function recordRedirect(
+  from: string,
+  to: string,
+): Promise<void> {
+  if (!lockPath || from === to) return;
+
+  const data = await loadLockFile();
+  const existing = data.redirects[from];
+
+  if (existing === to) return;
+
+  if (frozen) {
+    throw new Error(
+      `The lockfile is out of date. Rerun with \`--frozen=false\` to update it.`,
+    );
+  }
+
+  data.redirects[from] = to;
+  dirty = true;
+  await flushLockFile();
+}
+
+/**
+ * Verify a fetched module's source against the lock file.
+ */
 export async function verifyLock(url: string, source: string): Promise<void> {
   if (!lockPath) return;
 
@@ -80,10 +120,17 @@ export async function verifyLock(url: string, source: string): Promise<void> {
   if (existing) {
     if (existing !== hash) {
       throw new Error(
-        `Lock file integrity check failed for ${url}\n` +
-          `  expected: ${existing}\n` +
-          `  got:      ${hash}\n` +
-          `  Run with --reload to update the cache, or remove the lock file.`,
+        `Integrity check failed for remote specifier. The source code is invalid, as it does not match the expected hash in the lock file.\n` +
+          `\n` +
+          `  Specifier: ${url}\n` +
+          `  Actual: ${hash}\n` +
+          `  Expected: ${existing}\n` +
+          `\n` +
+          `This could be caused by:\n` +
+          `  * the lock file may be corrupt\n` +
+          `  * the source itself may be corrupt\n` +
+          `\n` +
+          `Investigate the lockfile; delete it to regenerate the lockfile or --reload to reload the source code from the server.`,
       );
     }
     return;
@@ -91,8 +138,7 @@ export async function verifyLock(url: string, source: string): Promise<void> {
 
   if (frozen) {
     throw new Error(
-      `Lock file is frozen but ${url} is not recorded.\n` +
-        `  Run without --frozen to update the lock file.`,
+      `The lockfile is out of date. Rerun with \`--frozen=false\` to update it.`,
     );
   }
 
