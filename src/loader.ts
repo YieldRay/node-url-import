@@ -12,6 +12,7 @@ import { fetchModule } from "./fetch.ts";
 import { cachePaths } from "./cache.ts";
 import { isHttpUrl } from "./constants.ts";
 
+export const importMetaURL = import.meta.url;
 const patchMeta: boolean = process.env.URL_IMPORT_LOCAL_META === "1";
 
 type ModuleFormat = "module" | "commonjs" | "json" | "wasm";
