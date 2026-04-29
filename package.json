@@ -1,0 +1,31 @@
+{
+  "name": "nodejs-minimal-ts-template",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "",
+  "main": "src/index.ts",
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "cli": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/index.ts",
+    "dev": "node --experimental-transform-types --env-file=.env --watch src/index.ts",
+    "test": "node --experimental-transform-types --test",
+    "build": "tsc --declaration --sourceMap"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "cli-name": "./src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.12",
+    "typescript": "^5.9.3"
+  }
+}
