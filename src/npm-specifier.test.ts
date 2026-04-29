@@ -25,13 +25,22 @@ describe("npm: specifier", () => {
 
   it("should preserve subpath", () => {
     assert.equal(stripNpmSpecifier("npm:lodash-es/add"), "lodash-es/add");
-    assert.equal(stripNpmSpecifier("npm:lodash-es@4.17.21/add"), "lodash-es/add");
+    assert.equal(
+      stripNpmSpecifier("npm:lodash-es@4.17.21/add"),
+      "lodash-es/add",
+    );
   });
 
   it("should preserve subpath for scoped packages", () => {
     assert.equal(stripNpmSpecifier("npm:@scope/pkg/sub"), "@scope/pkg/sub");
-    assert.equal(stripNpmSpecifier("npm:@scope/pkg@1.0.0/sub"), "@scope/pkg/sub");
-    assert.equal(stripNpmSpecifier("npm:@scope/pkg@1.0.0/deep/path"), "@scope/pkg/deep/path");
+    assert.equal(
+      stripNpmSpecifier("npm:@scope/pkg@1.0.0/sub"),
+      "@scope/pkg/sub",
+    );
+    assert.equal(
+      stripNpmSpecifier("npm:@scope/pkg@1.0.0/deep/path"),
+      "@scope/pkg/deep/path",
+    );
   });
 
   it("should resolve from node_modules at runtime", async () => {

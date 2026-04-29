@@ -1,8 +1,19 @@
 {
   "name": "node-url-import",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "type": "module",
   "description": "Node.js hook to import modules from HTTP(S) URLs",
+  "keywords": [
+    "node",
+    "http",
+    "import",
+    "require",
+    "loader",
+    "hook",
+    "esm",
+    "url",
+    "deno"
+  ],
   "main": "dist/index.js",
   "files": [
     "src",
@@ -23,27 +34,24 @@
     "node-url-import": "./dist/cli.js"
   },
   "scripts": {
-    "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./src/register.ts --test src/*.test.ts",
+    "cli": "node src/cli.ts",
+    "test": "node --import ./src/register.ts --test src/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "build": "tsc --declaration --sourceMap",
-    "cli": "node --experimental-transform-types --disable-warning=ExperimentalWarning src/cli.ts"
-  },
-  "keywords": [
-    "node",
-    "http",
-    "import",
-    "require",
-    "loader",
-    "hook",
-    "esm",
-    "url",
-    "deno"
-  ],
-  "engines": {
-    "node": ">=22"
+    "build": "tsc --declaration"
   },
   "devDependencies": {
-    "@types/node": "^22.19.17",
-    "typescript": "^5.9.3"
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YieldRay/node-url-import.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YieldRay/node-url-import/issues"
+  },
+  "homepage": "https://github.com/YieldRay/node-url-import#readme",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org"
   }
 }

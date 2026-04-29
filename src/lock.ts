@@ -16,6 +16,7 @@
  * With --frozen, any missing or mismatched entry causes an error.
  */
 
+import process from "node:process";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -85,10 +86,7 @@ export function isLockEnabled(): boolean {
  * Record a redirect in the lock file (original URL → final URL).
  * Only records when they differ.
  */
-export async function recordRedirect(
-  from: string,
-  to: string,
-): Promise<void> {
+export async function recordRedirect(from: string, to: string): Promise<void> {
   if (!lockPath || from === to) return;
 
   const data = await loadLockFile();

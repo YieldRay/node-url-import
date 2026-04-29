@@ -1,5 +1,6 @@
-#!/usr/bin/env -S node --experimental-transform-types --disable-warning=ExperimentalWarning
+#!/usr/bin/env node
 
+import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -129,28 +130,48 @@ if (isHttpUrl(target!)) {
 
   if (supportsImport) {
     nodeArgs = [
-      "--import", registerPath,
+      "--import",
+      registerPath,
       ...nodeFlags,
       "--input-type=module",
-      "-e", evalScript,
-      "--", ...scriptArgs,
+      "-e",
+      evalScript,
+      "--",
+      ...scriptArgs,
     ];
   } else {
     const loaderPath = resolve(__dirname, "loader.ts");
     nodeArgs = [
-      "--loader", loaderPath,
+      "--loader",
+      loaderPath,
       ...nodeFlags,
       "--input-type=module",
-      "-e", evalScript,
-      "--", ...scriptArgs,
+      "-e",
+      evalScript,
+      "--",
+      ...scriptArgs,
     ];
   }
 } else {
   if (supportsImport) {
-    nodeArgs = ["--import", registerPath, ...nodeFlags, target!, "--", ...scriptArgs];
+    nodeArgs = [
+      "--import",
+      registerPath,
+      ...nodeFlags,
+      target!,
+      "--",
+      ...scriptArgs,
+    ];
   } else {
     const loaderPath = resolve(__dirname, "loader.ts");
-    nodeArgs = ["--experimental-loader", loaderPath, ...nodeFlags, target!, "--", ...scriptArgs];
+    nodeArgs = [
+      "--experimental-loader",
+      loaderPath,
+      ...nodeFlags,
+      target!,
+      "--",
+      ...scriptArgs,
+    ];
   }
 }
 

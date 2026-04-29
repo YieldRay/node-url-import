@@ -1,9 +1,9 @@
 # node-url-import
 
-Node.js hook that lets you `import` modules directly from HTTP(S) URLs.
+Node.js hook that lets you `import` modules directly from HTTP(S) URLs like Deno.
 
 ```js
-import { add } from "https://esm.sh/lodash-es@4.17.21";
+import { add } from "https://esm.sh/lodash-es";
 
 console.log(add(1, 2)); // 3
 ```
@@ -14,7 +14,7 @@ Works with static imports, dynamic `import()`, and relative imports inside remot
 
 ### CLI
 
-Like `tsx` — a drop-in wrapper around `node` with the hook pre-loaded:
+Like `ts-node` — a drop-in wrapper around `node` with the hook pre-loaded:
 
 ```sh
 node-url-import [options] [node-flags] <script-or-url> [script-args...]
@@ -69,9 +69,9 @@ Modules can use Deno-style `npm:` specifiers to import from `node_modules`. The 
 
 ```js
 import ms from "npm:ms";
-import ms from "npm:ms@2.1.3";          // version stripped → "ms"
-import add from "npm:lodash-es@4/add";   // → "lodash-es/add"
-import node from "npm:@types/node@22";   // → "@types/node"
+import ms from "npm:ms@2.1.3"; // version stripped → "ms"
+import add from "npm:lodash-es@4/add"; // → "lodash-es/add"
+import node from "npm:@types/node@22"; // → "@types/node"
 ```
 
 ### Programmatic API
@@ -80,7 +80,7 @@ import node from "npm:@types/node@22";   // → "@types/node"
 import { fetchModule, clearCache } from "node-url-import";
 
 const { source, contentType } = await fetchModule(
-  "https://esm.sh/lodash-es@4.17.21/add",
+  "https://esm.sh/lodash-es/add",
 );
 console.log(source);
 
@@ -98,14 +98,14 @@ await clearCache();
 
 ## Options
 
-| Flag                | Description                                                                |
-| ------------------- | -------------------------------------------------------------------------- |
-| `-r, --reload`      | Bypass cache, re-fetch all remote modules                                  |
-| `--lock`            | Check/write a lock file (default: `./deno.lock`)                           |
-| `--lock-file <path>`| Lock file path (implies `--lock`)                                          |
-| `--frozen`          | Error if lock file is out of date (use with `--lock`)                      |
-| `--local-meta`      | Rewrite `import.meta.url` to a local `file://` URL (fixes `createRequire`) |
-| `--clear-cache`     | Purge the disk cache                                                       |
+| Flag                 | Description                                                                |
+| -------------------- | -------------------------------------------------------------------------- |
+| `-r, --reload`       | Bypass cache, re-fetch all remote modules                                  |
+| `--lock`             | Check/write a lock file (default: `./deno.lock`)                           |
+| `--lock-file <path>` | Lock file path (implies `--lock`)                                          |
+| `--frozen`           | Error if lock file is out of date (use with `--lock`)                      |
+| `--local-meta`       | Rewrite `import.meta.url` to a local `file://` URL (fixes `createRequire`) |
+| `--clear-cache`      | Purge the disk cache                                                       |
 
 Any unrecognized flags before the script are forwarded to Node.js (e.g. `--inspect`, `--env-file`).
 
@@ -132,18 +132,10 @@ On subsequent runs with `--lock`, fetched content is verified against the record
 
 ## Environment variables
 
-| Variable                  | Description              | Default                    |
-| ------------------------- | ------------------------ | -------------------------- |
-| `URL_IMPORT_CACHE_DIR`    | Custom cache directory   | `~/.cache/node-url-import` |
-| `URL_IMPORT_RELOAD=1`     | Same as `--reload`       |                            |
-| `URL_IMPORT_LOCK=<path>`  | Same as `--lock <file>`  |                            |
-| `URL_IMPORT_FROZEN=1`     | Same as `--frozen`       |                            |
-| `URL_IMPORT_LOCAL_META=1` | Same as `--local-meta`   |                            |
-
-## Requirements
-
-Node.js >= 22
-
-## License
-
-MIT
+| Variable                  | Description             | Default                    |
+| ------------------------- | ----------------------- | -------------------------- |
+| `URL_IMPORT_CACHE_DIR`    | Custom cache directory  | `~/.cache/node-url-import` |
+| `URL_IMPORT_RELOAD=1`     | Same as `--reload`      |                            |
+| `URL_IMPORT_LOCK=<path>`  | Same as `--lock <file>` |                            |
+| `URL_IMPORT_FROZEN=1`     | Same as `--frozen`      |                            |
+| `URL_IMPORT_LOCAL_META=1` | Same as `--local-meta`  |                            |

@@ -1,3 +1,4 @@
+import process from "node:process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -6,8 +7,7 @@ import { homedir } from "node:os";
 import { NAME } from "./constants.ts";
 
 const CACHE_DIR =
-  process.env.URL_IMPORT_CACHE_DIR ||
-  join(homedir(), ".cache", NAME);
+  process.env.URL_IMPORT_CACHE_DIR || join(homedir(), ".cache", NAME);
 
 export interface CachePaths {
   dir: string;

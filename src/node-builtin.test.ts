@@ -28,8 +28,7 @@ describe("node built-in from remote module", () => {
     const result = await resolve(
       "node:fs",
       {
-        parentURL:
-          "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
+        parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
       },
       nextResolve,
     );
@@ -41,8 +40,7 @@ describe("node built-in from remote module", () => {
     const result2 = await resolve(
       "fs/promises",
       {
-        parentURL:
-          "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
+        parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
       },
       nextResolve,
     );
@@ -54,8 +52,7 @@ describe("node built-in from remote module", () => {
     const result3 = await resolve(
       "./util.js",
       {
-        parentURL:
-          "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
+        parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
       },
       nextResolve,
     );

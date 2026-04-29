@@ -6,6 +6,7 @@
  *   node --import node-url-import/register ./app.mjs
  */
 
+import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { fetchModule } from "./fetch.ts";
 import { cachePaths } from "./cache.ts";
@@ -44,7 +45,10 @@ export type NextResolve = (
   context: ResolveContext,
 ) => Promise<ResolveResult>;
 
-export type NextLoad = (url: string, context: LoadContext) => Promise<LoadResult>;
+export type NextLoad = (
+  url: string,
+  context: LoadContext,
+) => Promise<LoadResult>;
 
 function inferFormat(url: string, contentType: string): ModuleFormat {
   const ct = contentType.toLowerCase();

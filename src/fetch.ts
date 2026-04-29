@@ -1,3 +1,4 @@
+import process from "node:process";
 import { readCache, writeCache } from "./cache.ts";
 import type { CacheEntry } from "./cache.ts";
 import { NAME, MAX_REDIRECTS } from "./constants.ts";

@@ -9,6 +9,7 @@
  * and the loader worker thread.
  */
 
+import process from "node:process";
 import { writeSync } from "node:fs";
 import { isatty } from "node:tty";
 
@@ -82,9 +83,7 @@ function formatElapsed(ms: number): string {
 
 function progressBar(done: number, total: number, tick: number): string {
   const filled =
-    total > 0
-      ? Math.min(Math.round((done / total) * BAR_WIDTH), BAR_WIDTH)
-      : 0;
+    total > 0 ? Math.min(Math.round((done / total) * BAR_WIDTH), BAR_WIDTH) : 0;
   const empty = BAR_WIDTH - filled;
 
   if (empty === 0) {
