@@ -11,7 +11,7 @@ import { fetchModule } from "./fetch.ts";
 import { cachePaths } from "./cache.ts";
 import { isHttpUrl } from "./constants.ts";
 
-const patchMeta: boolean = process.env.URL_IMPORT_META === "file";
+const patchMeta: boolean = process.env.URL_IMPORT_LOCAL_META === "1";
 
 type ModuleFormat = "module" | "commonjs" | "json" | "wasm";
 
@@ -106,9 +106,7 @@ export async function load(
     if (patchMeta && format === "module") {
       const { file } = cachePaths(url);
       const fileUrl = pathToFileURL(file).href;
-      source =
-        `const __url_import_meta_url = ${JSON.stringify(fileUrl)};\n` +
-        source.replaceAll("import.meta.url", "__url_import_meta_url");
+      source = `import.meta.url = ${JSON.stringify(fileUrl)};\n` + source;
     }
 
     return { shortCircuit: true, format, source };
