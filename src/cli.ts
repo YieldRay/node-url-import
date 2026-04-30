@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { parseArgs, styleText } from "node:util";
 import { NAME, isHttpUrl } from "./constants.ts";
+import { importMetaUrl as registerImportMetaUrl } from "./register.ts";
+import { importMetaUrl as loaderImportMetaUrl } from "./loader.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -113,7 +115,8 @@ if (values["clear-cache"]) {
   process.exit(0);
 }
 
-const registerPath: string = resolve(__dirname, "register.ts");
+const registerPath = fileURLToPath(registerImportMetaUrl);
+const loaderPath = fileURLToPath(loaderImportMetaUrl);
 
 const nodeVersion: number[] = process.versions.node.split(".").map(Number);
 const supportsImport: boolean =
@@ -140,7 +143,6 @@ if (isHttpUrl(target!)) {
       ...scriptArgs,
     ];
   } else {
-    const loaderPath = resolve(__dirname, "loader.ts");
     nodeArgs = [
       "--loader",
       loaderPath,
@@ -163,7 +165,6 @@ if (isHttpUrl(target!)) {
       ...scriptArgs,
     ];
   } else {
-    const loaderPath = resolve(__dirname, "loader.ts");
     nodeArgs = [
       "--experimental-loader",
       loaderPath,

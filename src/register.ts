@@ -8,6 +8,7 @@
  */
 
 import { register } from "node:module";
-import { importMetaURL } from "./loader.ts";
+import { importMetaUrl as loaderImportMetaUrl } from "./loader.ts";
 
-register(importMetaURL, import.meta.url);
+export const importMetaUrl = import.meta.url;
+register(loaderImportMetaUrl, import.meta.url);
