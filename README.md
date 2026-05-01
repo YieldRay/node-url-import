@@ -37,7 +37,7 @@ node-url-import -r ./app.mjs
 node-url-import --inspect ./app.mjs
 
 # Forward flags to the remote script
-node-url-import https://raw.esm.sh/armor64/dist/cli.js encode "hello"
+node-url-import https://raw.esm.sh/nrm-lite/cli.mjs -h
 
 # Write a lock file (Deno-compatible format)
 node-url-import --lock ./app.mjs

@@ -9,8 +9,6 @@ import { NAME, isHttpUrl } from "./constants.ts";
 import { importMetaUrl as registerImportMetaUrl } from "./register.ts";
 import { importMetaUrl as loaderImportMetaUrl } from "./loader.ts";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
 // Argument layout:
 //   node-url-import [our-flags] [node-flags] <script-or-url> [script-args]
 //
@@ -100,7 +98,7 @@ ${b("Options:")}
 ${b("Environment:")}
   ${y("URL_IMPORT_CACHE_DIR")}     Custom cache directory
                           ${dim("(default: ~/.cache/" + NAME + ")")}
-  ${y("URL_IMPORT_LOCAL_META=1")}   Same as --local-meta
+  ${y("URL_IMPORT_LOCAL_META=1")}  Same as --local-meta
   ${y("URL_IMPORT_RELOAD=1")}      Same as --reload
   ${y("URL_IMPORT_LOCK")}${dim("=path")}     Same as --lock <file>
   ${y("URL_IMPORT_FROZEN=1")}      Same as --frozen
@@ -114,9 +112,6 @@ if (values["clear-cache"]) {
   console.log(`${styleText("green", "✓")} Cache cleared.`);
   process.exit(0);
 }
-
-const registerPath = fileURLToPath(registerImportMetaUrl);
-const loaderPath = fileURLToPath(loaderImportMetaUrl);
 
 const nodeVersion: number[] = process.versions.node.split(".").map(Number);
 const supportsImport: boolean =
@@ -134,7 +129,7 @@ if (isHttpUrl(target!)) {
   if (supportsImport) {
     nodeArgs = [
       "--import",
-      registerPath,
+      registerImportMetaUrl,
       ...nodeFlags,
       "--input-type=module",
       "-e",
@@ -145,7 +140,7 @@ if (isHttpUrl(target!)) {
   } else {
     nodeArgs = [
       "--loader",
-      loaderPath,
+      loaderImportMetaUrl,
       ...nodeFlags,
       "--input-type=module",
       "-e",
@@ -158,7 +153,7 @@ if (isHttpUrl(target!)) {
   if (supportsImport) {
     nodeArgs = [
       "--import",
-      registerPath,
+      registerImportMetaUrl,
       ...nodeFlags,
       target!,
       "--",
@@ -167,7 +162,7 @@ if (isHttpUrl(target!)) {
   } else {
     nodeArgs = [
       "--experimental-loader",
-      loaderPath,
+      loaderImportMetaUrl,
       ...nodeFlags,
       target!,
       "--",
