@@ -1,6 +1,6 @@
 {
   "name": "node-url-import",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "description": "Node.js hook to import modules from HTTP(S) URLs",
   "keywords": [
