@@ -130,6 +130,30 @@ When `--lock` is passed, node-url-import writes a lock file recording the SHA-25
 
 On subsequent runs with `--lock`, fetched content is verified against the recorded hashes. Use `--frozen` to error on any mismatch instead of updating.
 
+## TypeScript
+
+TypeScript does not resolve `https://` specifiers out of the box. Add an ambient module declaration to a `.d.ts` file included in your `tsconfig.json`:
+
+```ts
+declare module 'https://*' {
+  const mod: unknown;
+  export default mod;
+  export * from 'module';
+}
+```
+
+For finer-grained types, declare specific remote modules explicitly:
+
+```ts
+declare module 'https://esm.sh/lodash-es' {
+  export { add, merge } from 'lodash-es';
+}
+```
+
+## Node.js `--experimental-network-imports`
+
+Node.js v20 shipped a built-in [`--experimental-network-imports`](https://nodejs.org/docs/latest-v20.x/api/cli.html#--experimental-network-imports) flag that allows HTTPS imports without a loader. It was removed in Node.js v22.
+
 ## Environment variables
 
 | Variable                  | Description             | Default                    |

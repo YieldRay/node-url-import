@@ -2,8 +2,7 @@
 
 import process from "node:process";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { parseArgs, styleText } from "node:util";
 import { NAME, isHttpUrl } from "./constants.ts";
 import { importMetaUrl as registerImportMetaUrl } from "./register.ts";
