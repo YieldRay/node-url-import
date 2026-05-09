@@ -34,6 +34,7 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
   downloadBegin(url);
 
   let currentUrl = url;
+  const redirectChain: string[] = [url];
 
   for (let i = 0; i < MAX_REDIRECTS; i++) {
     const res = await fetch(currentUrl, {
@@ -49,6 +50,7 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
         throw new Error(`Redirect from ${currentUrl} had no Location header`);
       }
       currentUrl = new URL(location, currentUrl).href;
+      redirectChain.push(currentUrl);
       continue;
     }
 
@@ -62,7 +64,7 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
     const contentType: string =
       res.headers.get("content-type") || "application/javascript";
 
-    await writeCache(url, source, contentType, currentUrl);
+    await writeCache(redirectChain, source, contentType);
 
     if (isLockEnabled()) {
       await recordRedirect(url, currentUrl);

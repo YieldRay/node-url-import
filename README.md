@@ -90,8 +90,8 @@ await clearCache();
 ## How it works
 
 1. The ESM loader hooks (`resolve` + `load`) intercept any specifier starting with `http://` or `https://`.
-2. Relative imports inside remote modules (e.g. `import "./util.js"` from `https://esm.sh/...`) resolve back to the same origin. Bare specifiers like `"node:fs"` fall through to Node's default resolver.
-3. Fetched sources are cached at `~/.cache/node-url-import/` keyed by SHA-256 of the URL.
+2. `resolve` follows redirects to the final URL so that relative imports inside a remote module (e.g. `import "./util.js"`) resolve against the correct base. Bare specifiers like `"node:fs"` fall through to Node's default resolver.
+3. Fetched sources are cached in Deno's remote module cache (`$DENO_DIR/remote/`, defaulting to `~/Library/Caches/deno/remote/` on macOS and `~/.cache/deno/remote/` on Linux), using the same file layout as Deno — so both runtimes share the same cache.
 4. Cached modules are used forever until `--reload` is passed or `--clear-cache` is used (same as Deno).
 5. Module format is inferred from the `Content-Type` header and URL extension, defaulting to ESM.
 6. A Deno-style progress bar is shown on stderr during downloads (only on TTY).
@@ -156,10 +156,10 @@ Node.js v20 shipped a built-in [`--experimental-network-imports`](https://nodejs
 
 ## Environment variables
 
-| Variable                  | Description             | Default                    |
-| ------------------------- | ----------------------- | -------------------------- |
-| `URL_IMPORT_CACHE_DIR`    | Custom cache directory  | `~/.cache/node-url-import` |
-| `URL_IMPORT_RELOAD=1`     | Same as `--reload`      |                            |
-| `URL_IMPORT_LOCK=<path>`  | Same as `--lock <file>` |                            |
-| `URL_IMPORT_FROZEN=1`     | Same as `--frozen`      |                            |
-| `URL_IMPORT_LOCAL_META=1` | Same as `--local-meta`  |                            |
+| Variable                  | Description                                                               | Default                         |
+| ------------------------- | ------------------------------------------------------------------------- | ------------------------------- |
+| `DENO_DIR`                | Deno's root cache directory (shared with Deno)                            | `~/Library/Caches/deno` (macOS), `~/.cache/deno` (Linux) |
+| `URL_IMPORT_RELOAD=1`     | Same as `--reload`                                                        |                                 |
+| `URL_IMPORT_LOCK=<path>`  | Same as `--lock <file>`                                                   |                                 |
+| `URL_IMPORT_FROZEN=1`     | Same as `--frozen`                                                        |                                 |
+| `URL_IMPORT_LOCAL_META=1` | Same as `--local-meta`                                                    |                                 |

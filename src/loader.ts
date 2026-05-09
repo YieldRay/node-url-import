@@ -112,9 +112,11 @@ export async function resolve(
     return nextResolve(stripNpmSpecifier(specifier), context);
   }
 
-  // Direct HTTP(S) URL
+  // Direct HTTP(S) URL — resolve to the final URL after redirects so that
+  // relative imports inside the fetched module resolve against the correct base.
   if (isHttpUrl(specifier)) {
-    return { shortCircuit: true, url: specifier };
+    const { finalUrl } = await fetchModule(specifier);
+    return { shortCircuit: true, url: finalUrl };
   }
 
   // Relative or absolute URL import inside an HTTP-loaded module.

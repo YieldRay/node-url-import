@@ -95,8 +95,7 @@ ${b("Options:")}
                           ${dim("(fixes createRequire(import.meta.url) in remote modules)")}
 
 ${b("Environment:")}
-  ${y("URL_IMPORT_CACHE_DIR")}     Custom cache directory
-                          ${dim("(default: ~/.cache/" + NAME + ")")}
+  ${y("DENO_DIR")}                 Deno cache root ${dim("(default: ~/Library/Caches/deno on macOS, ~/.cache/deno on Linux)")}
   ${y("URL_IMPORT_LOCAL_META=1")}  Same as --local-meta
   ${y("URL_IMPORT_RELOAD=1")}      Same as --reload
   ${y("URL_IMPORT_LOCK")}${dim("=path")}     Same as --lock <file>
