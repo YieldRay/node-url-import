@@ -14,6 +14,16 @@ let sessionStarted = false;
 
 const reload: boolean = process.env.URL_IMPORT_RELOAD === "1";
 
+/**
+ * Fetch a remote module by URL, returning its source and content type.
+ *
+ * Results are cached in Deno's remote module cache (`$DENO_DIR/remote/`) and
+ * reused on subsequent calls. Pass `URL_IMPORT_RELOAD=1` to bypass the cache.
+ *
+ * @param url - The `http://` or `https://` URL to fetch.
+ * @returns The module source, content type, original URL, and final URL after redirects.
+ * @throws If the request fails or exceeds the redirect limit.
+ */
 export async function fetchModule(url: string): Promise<CacheEntry> {
   const cached = reload ? null : await readCache(url);
 

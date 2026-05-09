@@ -31,9 +31,13 @@ export interface CachePaths {
 }
 
 export interface CacheEntry {
+  /** Raw source text of the module. */
   source: string;
+  /** Value of the `Content-Type` response header (e.g. `"application/javascript; charset=utf-8"`). */
   contentType: string;
+  /** The URL as originally requested (before redirects). */
   url: string;
+  /** The final URL after following all redirects. */
   finalUrl: string;
 }
 
@@ -128,6 +132,7 @@ export async function writeCache(
   await writeFile(file, source + META_MARKER + JSON.stringify(meta), "utf-8");
 }
 
+/** Remove all cached remote modules from `$DENO_DIR/remote/`. */
 export async function clearCache(): Promise<void> {
   await rm(CACHE_DIR, { recursive: true, force: true });
 }

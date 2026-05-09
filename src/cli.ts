@@ -7,6 +7,7 @@ import { parseArgs, styleText } from "node:util";
 import { NAME, isHttpUrl } from "./constants.ts";
 import { importMetaUrl as registerImportMetaUrl } from "./register.ts";
 import { importMetaUrl as loaderImportMetaUrl } from "./loader.ts";
+import { clearCache } from "./cache.ts";
 
 // Argument layout:
 //   node-url-import [our-flags] [node-flags] <script-or-url> [script-args]
@@ -105,7 +106,6 @@ ${b("Environment:")}
 }
 
 if (values["clear-cache"]) {
-  const { clearCache } = await import("./cache.ts");
   await clearCache();
   console.log(`${styleText("green", "✓")} Cache cleared.`);
   process.exit(0);
