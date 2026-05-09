@@ -17,6 +17,10 @@ Works with static imports, dynamic `import()`, and relative imports inside remot
 Like `ts-node` — a drop-in wrapper around `node` with the hook pre-loaded:
 
 ```sh
+npm i -g node-url-import
+# OR
+npx node-url-import
+
 node-url-import [options] [node-flags] <script-or-url> [script-args...]
 ```
 

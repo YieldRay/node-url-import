@@ -81,11 +81,11 @@ ${b("Usage:")}
 
 ${b("Examples:")}
   ${dim("$")} ${c(NAME)} ./app.mjs
-  ${dim("$")} ${c(NAME)} https://esm.sh/dler
-  ${dim("$")} ${c(NAME)} ${y("-r")} ./app.mjs                 ${dim("# reload remote modules")}
-  ${dim("$")} ${c(NAME)} ${y("--lock")} ./app.mjs             ${dim("# check/write deno.lock")}
-  ${dim("$")} ${c(NAME)} ${y("--inspect")} ./app.mjs          ${dim("# pass --inspect to node")}
-  ${dim("$")} ${c(NAME)} https://example.com/cli.js -h   ${dim("# -h forwarded to script")}
+  ${dim("$")} ${c(NAME)} https://raw.esm.sh/armor64/dist/cli.js
+  ${dim("$")} ${c(NAME)} ${y("-r")} ./app.mjs                  ${dim("# reload remote modules")}
+  ${dim("$")} ${c(NAME)} ${y("--lock")} ./app.mjs              ${dim("# check/write deno.lock")}
+  ${dim("$")} ${c(NAME)} ${y("--inspect")} ./app.mjs           ${dim("# pass --inspect to node")}
+  ${dim("$")} ${c(NAME)} https://example.com/cli.js -h ${dim("# -h forwarded to script")}
 
 ${b("Options:")}
   ${y("-r, --reload")}             Bypass cache, re-fetch all remote modules

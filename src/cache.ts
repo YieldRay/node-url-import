@@ -88,10 +88,17 @@ export async function readCache(url: string): Promise<CacheEntry | null> {
     const metaIdx = raw.lastIndexOf(META_MARKER);
     if (metaIdx === -1) {
       // No metadata — treat whole file as source, infer content-type
-      return { source: raw, contentType: inferContentType(url), url, finalUrl: url };
+      return {
+        source: raw,
+        contentType: inferContentType(url),
+        url,
+        finalUrl: url,
+      };
     }
     const source = raw.slice(0, metaIdx);
-    const meta: DenoCacheMetadata = JSON.parse(raw.slice(metaIdx + META_MARKER.length));
+    const meta: DenoCacheMetadata = JSON.parse(
+      raw.slice(metaIdx + META_MARKER.length),
+    );
     const contentType = meta.headers["content-type"] || inferContentType(url);
     return { source, contentType, url: meta.url, finalUrl: meta.url };
   } catch {
