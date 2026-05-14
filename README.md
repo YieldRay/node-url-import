@@ -108,7 +108,7 @@ await clearCache();
 | `--lock`             | Check/write a lock file (default: `./deno.lock`)                           |
 | `--lock-file <path>` | Lock file path (implies `--lock`)                                          |
 | `--frozen`           | Error if lock file is out of date (use with `--lock`)                      |
-| `--local-meta`       | Rewrite `import.meta.url` to a local `file://` URL (fixes `createRequire`) |
+| `--tmp`              | Write fetched modules to a tmp dir with readable paths (CLI only)          |
 | `--clear-cache`      | Purge the disk cache                                                       |
 
 Any unrecognized flags before the script are forwarded to Node.js (e.g. `--inspect`, `--env-file`).
@@ -166,4 +166,4 @@ Node.js v20 shipped a built-in [`--experimental-network-imports`](https://nodejs
 | `URL_IMPORT_RELOAD=1`     | Same as `--reload`                                                        |                                 |
 | `URL_IMPORT_LOCK=<path>`  | Same as `--lock <file>`                                                   |                                 |
 | `URL_IMPORT_FROZEN=1`     | Same as `--frozen`                                                        |                                 |
-| `URL_IMPORT_LOCAL_META=1` | Same as `--local-meta`                                                    |                                 |
+| `URL_IMPORT_TMP=1`        | Same as `--tmp`                                                           |                                 |
