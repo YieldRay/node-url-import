@@ -23,7 +23,7 @@ const { values, tokens } = parseArgs({
   options: {
     help: { type: "boolean", default: false },
     "clear-cache": { type: "boolean", default: false },
-    "local-meta": { type: "boolean", default: false },
+    tmp: { type: "boolean", default: false },
     reload: { type: "boolean", short: "r", default: false },
     lock: { type: "boolean", default: false },
     "lock-file": { type: "string" },
@@ -92,12 +92,12 @@ ${b("Options:")}
   ${y("--lock")}                   Check/write a lock file ${dim("(default: ./deno.lock)")}
   ${y("--lock-file")} ${dim("<path>")}       Lock file path ${dim("(implies --lock)")}
   ${y("--frozen")}                 Error if lock file is out of date ${dim("(use with --lock)")}
-  ${y("--local-meta")}             Rewrite import.meta.url to a local file:// URL
-                          ${dim("(fixes createRequire(import.meta.url) in remote modules)")}
+  ${y("--tmp")}                    Write fetched modules to a tmp dir with readable paths
+                          ${dim("(modules see themselves as local files under /tmp/node-url-import/)")}
 
 ${b("Environment:")}
   ${y("DENO_DIR")}                 Deno cache root ${dim("(default: ~/Library/Caches/deno on macOS, ~/.cache/deno on Linux)")}
-  ${y("URL_IMPORT_LOCAL_META=1")}  Same as --local-meta
+  ${y("URL_IMPORT_TMP=1")}         Same as --tmp
   ${y("URL_IMPORT_RELOAD=1")}      Same as --reload
   ${y("URL_IMPORT_LOCK")}${dim("=path")}     Same as --lock <file>
   ${y("URL_IMPORT_FROZEN=1")}      Same as --frozen
@@ -172,8 +172,8 @@ if (isHttpUrl(target!)) {
 // Pass our flags to the child process via environment variables.
 const env: Record<string, string | undefined> = { ...process.env };
 
-if (values["local-meta"]) {
-  env.URL_IMPORT_LOCAL_META = "1";
+if (values.tmp) {
+  env.URL_IMPORT_TMP = "1";
 }
 if (values.reload) {
   env.URL_IMPORT_RELOAD = "1";

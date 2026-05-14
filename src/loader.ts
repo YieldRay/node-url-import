@@ -6,14 +6,12 @@
  *   node --import node-url-import/register ./app.mjs
  */
 
-import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { fetchModule } from "./fetch.ts";
-import { cachePaths } from "./cache.ts";
 import { isHttpUrl } from "./constants.ts";
+import { tmpEnabled, urlToTmpPath, writeTmpFile, tmpPathToUrl } from "./tmp.ts";
 
 export const importMetaUrl = import.meta.url;
-const patchMeta: boolean = process.env.URL_IMPORT_LOCAL_META === "1";
 
 type ModuleFormat = "module" | "commonjs" | "json" | "wasm";
 
@@ -115,8 +113,37 @@ export async function resolve(
   // Direct HTTP(S) URL — resolve to the final URL after redirects so that
   // relative imports inside the fetched module resolve against the correct base.
   if (isHttpUrl(specifier)) {
-    const { finalUrl } = await fetchModule(specifier);
+    const { finalUrl, source, contentType } = await fetchModule(specifier);
+
+    if (tmpEnabled) {
+      const tmpPath = urlToTmpPath(finalUrl, contentType);
+      await writeTmpFile(tmpPath, source);
+      const format = inferFormat(finalUrl, contentType);
+      return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
+    }
+
     return { shortCircuit: true, url: finalUrl };
+  }
+
+  // --tmp mode: relative import inside a module that lives under the tmp dir.
+  // Reverse-map the parent's tmp path back to its HTTP URL, resolve the
+  // specifier against that origin, then fetch + write the result to tmp.
+  if (
+    tmpEnabled &&
+    context.parentURL &&
+    (specifier.startsWith("./") ||
+      specifier.startsWith("../") ||
+      specifier.startsWith("/"))
+  ) {
+    const parentHttpUrl = tmpPathToUrl(context.parentURL);
+    if (parentHttpUrl) {
+      const resolved = new URL(specifier, parentHttpUrl).href;
+      const { finalUrl, source, contentType } = await fetchModule(resolved);
+      const tmpPath = urlToTmpPath(finalUrl, contentType);
+      await writeTmpFile(tmpPath, source);
+      const format = inferFormat(finalUrl, contentType);
+      return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
+    }
   }
 
   // Relative or absolute URL import inside an HTTP-loaded module.
@@ -143,12 +170,6 @@ export async function load(
   if (isHttpUrl(url)) {
     let { source, contentType } = await fetchModule(url);
     const format = inferFormat(url, contentType);
-
-    if (patchMeta && format === "module") {
-      const { file } = cachePaths(url);
-      const fileUrl = pathToFileURL(file).href;
-      source = `import.meta.url = ${JSON.stringify(fileUrl)};\n` + source;
-    }
 
     return { shortCircuit: true, format, source };
   }

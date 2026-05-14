@@ -29,7 +29,7 @@ The package is a Node.js ESM loader hook that lets scripts `import` modules dire
 import "https://…"
   → loader.ts resolve()    — calls fetchModule() to follow redirects; returns finalUrl as the
                              canonical URL so relative imports inside the module resolve correctly
-  → loader.ts load()       — calls fetchModule() (cache hit), infers format, optionally patches import.meta.url
+  → loader.ts load()       — calls fetchModule() (cache hit), infers format
   → fetch.ts fetchModule() — follows redirects manually (up to MAX_REDIRECTS=10), writes cache + lock
   → cache.ts writeCache()  — writes one Deno-format file per redirect hop + one source entry
   → lock.ts verifyLock()   — checks/updates deno.lock if --lock is active
@@ -39,11 +39,12 @@ import "https://…"
 
 | File | Role |
 |---|---|
-| `src/loader.ts` | ESM `resolve` + `load` hooks; `npm:` specifier stripping; format inference |
+| `src/loader.ts` | ESM `resolve` + `load` hooks; `npm:` specifier stripping; format inference; `--tmp` mode integration |
 | `src/register.ts` | Entry point for `--import` flag; calls `module.register()` to install loader in a worker thread |
 | `src/fetch.ts` | HTTP fetch with manual redirect tracking; builds full `redirectChain[]` for cache |
 | `src/cache.ts` | Deno-compatible disk cache at `$DENO_DIR/remote/`; files keyed by `sha256(url.pathname)` per host |
 | `src/lock.ts` | Deno-compatible lock file (version 5); lazy-loaded, flushed after each write |
+| `src/tmp.ts` | `--tmp` mode: writes fetched modules to a human-readable tmp dir mirroring the URL structure; reverse-maps tmp paths back to HTTP URLs for transitive imports |
 | `src/cli.ts` | CLI wrapper: parses own flags, forwards unknown flags to Node, spawns child `node` process |
 | `src/progress.ts` | TTY progress bar shown on stderr during downloads |
 | `src/constants.ts` | `NAME`, `MAX_REDIRECTS`, `isHttpUrl()` |
