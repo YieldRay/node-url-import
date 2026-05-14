@@ -168,7 +168,7 @@ export async function load(
   nextLoad: NextLoad,
 ): Promise<LoadResult> {
   if (isHttpUrl(url)) {
-    let { source, contentType } = await fetchModule(url);
+    const { source, contentType } = await fetchModule(url);
     const format = inferFormat(url, contentType);
 
     return { shortCircuit: true, format, source };

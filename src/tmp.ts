@@ -10,6 +10,12 @@
  * get an `index.<ext>` appended so they become directories, avoiding
  * collisions with child paths (e.g. .../ms@2.1.3/es2022/ms.mjs).
  *
+ * The reverse mapping (tmpPathToUrl) does NOT strip this index file.
+ * Instead it returns e.g. `https://esm.sh/ms@2.1.3/index.mjs`, which
+ * is fine because it's only used to resolve relative imports — and
+ * `new URL("./foo.js", "https://x/bar/index.mjs")` gives the same
+ * base directory as `new URL("./foo.js", "https://x/bar/")`.
+ *
  * This is CLI-only. The loader never enables this on its own — it is
  * activated via the URL_IMPORT_TMP=1 environment variable set by the CLI.
  */
@@ -84,15 +90,16 @@ export function urlToTmpPath(url: string, contentType?: string): string {
  * Reverse-map a file:// URL (or local path) under the tmp root back to its
  * original HTTP(S) URL. Returns null if the path is not under TMP_ROOT.
  *
- * For paths that end with /index.<ext> (written by urlToTmpPath for
- * extensionless URLs), the index file is stripped so the original URL
- * is recovered.
+ * No stripping is done — the returned URL includes `/index.mjs` if one
+ * was added by urlToTmpPath. This is correct because tmpPathToUrl is only
+ * used to resolve relative imports, and the base directory is the same
+ * whether the URL ends in `/index.mjs` or `/`.
  *
  * file:///tmp/node-url-import/https/esm.sh/v135/pkg@1.0.0/script.js
  * → https://esm.sh/v135/pkg@1.0.0/script.js
  *
  * file:///tmp/node-url-import/https/esm.sh/ms@2.1.3/index.mjs
- * → https://esm.sh/ms@2.1.3
+ * → https://esm.sh/ms@2.1.3/index.mjs
  */
 export function tmpPathToUrl(fileUrl: string): string | null {
   let filePath: string;
@@ -107,18 +114,14 @@ export function tmpPathToUrl(fileUrl: string): string | null {
   if (!filePath.startsWith(TMP_ROOT)) return null;
 
   // Strip the TMP_ROOT prefix to get: <scheme>/<host>/<path...>
-  const relative = filePath.slice(TMP_ROOT.length + 1); // +1 for the trailing /
+  // Normalise to forward slashes so this works on Windows where path.join
+  // produces backslashes.
+  const relative = filePath.slice(TMP_ROOT.length + 1).replaceAll("\\", "/");
   const slashIdx = relative.indexOf("/");
   if (slashIdx === -1) return null;
 
   const scheme = relative.slice(0, slashIdx);
-  let rest = relative.slice(slashIdx + 1);
-
-  // Strip /index.<ext> suffix that was added for extensionless URLs.
-  const indexMatch = rest.match(/\/index\.(mjs|js|ts|json|wasm)$/);
-  if (indexMatch) {
-    rest = rest.slice(0, -indexMatch[0].length);
-  }
+  const rest = relative.slice(slashIdx + 1);
 
   // rest is: <host>/<pathname...>
   return `${scheme}://${rest}`;

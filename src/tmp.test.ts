@@ -95,6 +95,17 @@ describe("tmp: urlToTmpPath", () => {
     );
   });
 
+  it("should preserve real /index.mjs in URL path", () => {
+    const result = urlToTmpPath(
+      "https://cdn.example.com/lib/index.mjs",
+      "application/javascript",
+    );
+    assert.equal(
+      result,
+      join(TMP_ROOT, "https", "cdn.example.com", "lib", "index.mjs"),
+    );
+  });
+
   it("should preserve .ts extension without adding index", () => {
     const result = urlToTmpPath(
       "https://deno.land/x/mod@1.0.0/main.ts",
@@ -122,10 +133,10 @@ describe("tmp: tmpPathToUrl", () => {
   });
 
   it("should reverse-map file:// URL to https URL", () => {
-    const fileUrl = `file://${join(TMP_ROOT, "https", "esm.sh", "pkg", "index.js")}`;
+    const fileUrl = `file://${join(TMP_ROOT, "https", "esm.sh", "pkg", "index.mjs")}`;
     const result = tmpPathToUrl(fileUrl);
-    // index.js is stripped → original URL had no extension
-    assert.equal(result, "https://esm.sh/pkg");
+    // index.mjs is NOT stripped — returned URL includes it
+    assert.equal(result, "https://esm.sh/pkg/index.mjs");
   });
 
   it("should reverse-map http scheme", () => {
@@ -144,7 +155,7 @@ describe("tmp: tmpPathToUrl", () => {
     assert.equal(result, null);
   });
 
-  it("should strip index.mjs added for extensionless URLs", () => {
+  it("should preserve index.mjs in reverse mapping (no stripping)", () => {
     const tmpPath = join(
       TMP_ROOT,
       "https",
@@ -153,22 +164,20 @@ describe("tmp: tmpPathToUrl", () => {
       "index.mjs",
     );
     const result = tmpPathToUrl(tmpPath);
-    assert.equal(result, "https://esm.sh/ms@2.1.3");
+    // Not stripped — relative imports resolve against same base directory
+    assert.equal(result, "https://esm.sh/ms@2.1.3/index.mjs");
   });
 
-  it("should NOT strip index.mjs if it was part of the original URL path", () => {
-    // A URL like https://esm.sh/v135/ms@2.1.3/es2022/ms.mjs should NOT be stripped
+  it("should preserve real /index.mjs from URL path", () => {
     const tmpPath = join(
       TMP_ROOT,
       "https",
-      "esm.sh",
-      "v135",
-      "ms@2.1.3",
-      "es2022",
-      "ms.mjs",
+      "cdn.example.com",
+      "lib",
+      "index.mjs",
     );
     const result = tmpPathToUrl(tmpPath);
-    assert.equal(result, "https://esm.sh/v135/ms@2.1.3/es2022/ms.mjs");
+    assert.equal(result, "https://cdn.example.com/lib/index.mjs");
   });
 
   it("should roundtrip: urlToTmpPath → tmpPathToUrl for URL with extension", () => {
@@ -178,11 +187,18 @@ describe("tmp: tmpPathToUrl", () => {
     assert.equal(recovered, original);
   });
 
-  it("should roundtrip: urlToTmpPath → tmpPathToUrl for extensionless URL", () => {
+  it("should roundtrip correctly for extensionless URL (includes index.mjs)", () => {
     const original = "https://esm.sh/ms@2.1.3";
     const tmpPath = urlToTmpPath(original, "application/javascript");
     const recovered = tmpPathToUrl(tmpPath);
-    assert.equal(recovered, original);
+    // Recovered URL includes /index.mjs — this is fine because
+    // relative imports resolve against the same base directory
+    assert.equal(recovered, "https://esm.sh/ms@2.1.3/index.mjs");
+
+    // Verify: relative import resolves the same from both URLs
+    const fromOriginal = new URL("./es2022/ms.mjs", original + "/").href;
+    const fromRecovered = new URL("./es2022/ms.mjs", recovered).href;
+    assert.equal(fromOriginal, fromRecovered);
   });
 });
 
@@ -214,7 +230,6 @@ describe("tmp: CLI --tmp smoke test", () => {
   });
 
   it("should write fetched module to tmp dir and execute successfully", async () => {
-    // Write a small script that imports ms from a URL and prints a result
     await mkdir(fixtureDir, { recursive: true });
     const scriptPath = join(fixtureDir, "smoke-ms.mjs");
     await writeFile(
@@ -244,7 +259,6 @@ describe("tmp: CLI --tmp smoke test", () => {
       `Expected "1m" in stdout, got: ${result.stdout}`,
     );
 
-    // Verify that files were actually written under the tmp dir
     const tmpHttpsDir = join(TMP_ROOT, "https", "esm.sh");
     assert.ok(
       existsSync(tmpHttpsDir),
@@ -253,7 +267,6 @@ describe("tmp: CLI --tmp smoke test", () => {
   });
 
   it("should write transitive deps to tmp dir", async () => {
-    // lodash-es has transitive sub-module imports
     await mkdir(fixtureDir, { recursive: true });
     const scriptPath = join(fixtureDir, "smoke-lodash.mjs");
     await writeFile(
@@ -283,7 +296,6 @@ describe("tmp: CLI --tmp smoke test", () => {
       `Expected "5" in stdout, got: ${result.stdout}`,
     );
 
-    // Multiple files should have been written (transitive deps)
     const tmpHttpsDir = join(TMP_ROOT, "https", "esm.sh");
     assert.ok(
       existsSync(tmpHttpsDir),
