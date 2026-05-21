@@ -117,9 +117,9 @@ await clearCache();
 
 | Feature | Minimum Node.js |
 |---------|----------------|
-| ESM `import` (via `module.register`) | 18.19+ / 20.6+ |
-| ESM `import` (via `module.registerHooks`) | 22.15+ |
-| CJS `require` of HTTP URLs | 24+ |
+| ESM `import` (via `module.register`) | v18.19.0 / v20.6.0 |
+| ESM `import` (via `module.registerHooks`) | v22.15.0 / v23.5.0 |
+| CJS `require` of HTTP URLs | v24+ |
 
 ## Options
 

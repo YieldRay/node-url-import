@@ -18,7 +18,7 @@ npm run typecheck     # tsc --noEmit
 npm run cli -- [args] # node src/cli.ts
 ```
 
-Node v22.15+ required (for `module.registerHooks()`). Node v24+ for CJS `require` of HTTP URLs.
+Node v18.19+ / v20.6+ required (for `module.register()`). Node v22.15+ / v23.5+ for `module.registerHooks()`. Node v24+ for CJS `require` of HTTP URLs.
 
 ## Architecture
 
@@ -44,7 +44,8 @@ import "https://…" / require("https://…")
 | File | Role |
 |---|---|
 | `src/hooks.ts` | Synchronous `resolve` + `load` hooks (for `module.registerHooks()`); `npm:` specifier stripping; format inference; handles CJS parentURL mangling for transitive imports |
-| `src/register-hooks.ts` | Entry point: calls `module.registerHooks()` to install the hooks |
+| `src/loader.ts` | Async `resolve` + `load` hooks (for `module.register()`); thin wrapper delegating to the sync hooks in `hooks.ts` |
+| `src/register-hooks.ts` | Entry point: calls `module.registerHooks()` on Node 22.15+, falls back to `module.register()` on Node 18.19+/20.6+ |
 | `src/sync-fetch.ts` | Synchronous fetch API: checks disk cache with `readFileSync`, on miss blocks via `Atomics.wait` while worker fetches |
 | `src/sync-fetch-worker.ts` | Persistent worker thread that runs async `fetchModule()` and signals completion via `Atomics.notify` + `MessagePort` |
 | `src/fetch.ts` | Async HTTP fetch with manual redirect tracking; builds full `redirectChain[]` for cache |
