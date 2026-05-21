@@ -28,6 +28,9 @@
       "default": "./dist/loader.js"
     },
     "./register": {
+      "default": "./dist/register-hooks.js"
+    },
+    "./register-legacy": {
       "default": "./dist/register.js"
     }
   },
@@ -36,9 +39,11 @@
   },
   "scripts": {
     "cli": "node src/cli.ts",
-    "node:import": "node --import ./src/register.ts",
+    "node:import": "node --import ./src/register-hooks.ts",
     "node:loader": "node --loader ./src/loader.ts",
-    "test": "node --import ./src/register.ts --test src/*.test.ts",
+    "test": "npm run test:register-hooks",
+    "test:register": "node --import ./src/register.ts --test src/*.test.ts",
+    "test:register-hooks": "node --import ./src/register-hooks.ts --test src/*.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --declaration"
   },

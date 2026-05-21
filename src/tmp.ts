@@ -24,6 +24,7 @@ import process from "node:process";
 import { tmpdir } from "node:os";
 import { join, dirname, extname } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NAME } from "./constants.ts";
 
@@ -136,4 +137,12 @@ export async function writeTmpFile(
 ): Promise<void> {
   await mkdir(dirname(tmpPath), { recursive: true });
   await writeFile(tmpPath, source, "utf-8");
+}
+
+/**
+ * Synchronous version of writeTmpFile for use in registerHooks (sync hooks).
+ */
+export function writeTmpFileSync(tmpPath: string, source: string): void {
+  mkdirSync(dirname(tmpPath), { recursive: true });
+  writeFileSync(tmpPath, source, "utf-8");
 }
