@@ -12,8 +12,4 @@ import { resolve, load } from "./hooks.ts";
 
 export const importMetaUrl = import.meta.url;
 
-// Cast needed because @types/node's ModuleSource is broader than our return type
-module.registerHooks({
-  resolve: resolve as Parameters<typeof module.registerHooks>[0]["resolve"],
-  load: load as Parameters<typeof module.registerHooks>[0]["load"],
-});
+module.registerHooks({ resolve, load });

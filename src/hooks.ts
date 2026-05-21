@@ -7,6 +7,7 @@
  * Requires Node.js 22.15+ or 23.5+.
  */
 
+import type { ResolveHookContext, ResolveFnOutput, LoadHookContext, LoadFnOutput } from "node:module";
 import { pathToFileURL } from "node:url";
 import { fetchModuleSync } from "./sync-fetch.ts";
 import { isHttpUrl } from "./constants.ts";
@@ -43,8 +44,6 @@ export function stripNpmSpecifier(specifier: string): string {
   return bare;
 }
 
-type ModuleFormat = "module" | "commonjs" | "json" | "wasm";
-
 /**
  * When CJS code does `require("https://...")`, Node's registerHooks resolves the
  * URL but then internally converts it to a file path for the CJS module system.
@@ -73,36 +72,10 @@ function getHttpParentUrl(parentURL: string | undefined): string | null {
   return extractHttpUrlFromParent(parentURL);
 }
 
-// Use Node's own hook types for compatibility
-interface ResolveHookContext {
-  conditions?: string[];
-  importAttributes?: Record<string, string | undefined>;
-  parentURL?: string;
-}
-
-interface ResolveFnOutput {
-  format?: string | null | undefined;
-  importAttributes?: Record<string, string | undefined>;
-  shortCircuit?: boolean | undefined;
-  url: string;
-}
-
-interface LoadHookContext {
-  conditions?: string[];
-  format?: string | null | undefined;
-  importAttributes?: Record<string, string | undefined>;
-}
-
-interface LoadFnOutput {
-  format?: string | null | undefined;
-  shortCircuit?: boolean | undefined;
-  source?: string | ArrayBuffer | SharedArrayBuffer | Uint8Array | undefined;
-}
-
 type NextResolve = (specifier: string, context?: Partial<ResolveHookContext>) => ResolveFnOutput;
 type NextLoad = (url: string, context?: Partial<LoadHookContext>) => LoadFnOutput;
 
-function inferFormat(url: string, contentType: string): ModuleFormat {
+function inferFormat(url: string, contentType: string): string {
   const ct = contentType.toLowerCase();
 
   if (ct.includes("application/json")) return "json";

@@ -1,5 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import type { ResolveHookContext } from "node:module";
+
+const defaultResolveContext: ResolveHookContext = {
+  conditions: [],
+  importAttributes: {},
+  parentURL: undefined,
+};
 
 describe("node built-in from remote module", () => {
   it("should resolve node: specifiers to built-ins, not HTTP URLs", async () => {
@@ -25,37 +32,24 @@ describe("node built-in from remote module", () => {
       shortCircuit: true as const,
     });
 
-    const result = resolve(
-      "node:fs",
-      {
-        parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
-      },
-      nextResolve,
-    );
+    const ctx: ResolveHookContext = {
+      ...defaultResolveContext,
+      parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
+    };
+
+    const result = resolve("node:fs", ctx, nextResolve);
     assert.ok(
       !result.url.startsWith("https://"),
       `Expected node built-in, got: ${result.url}`,
     );
 
-    const result2 = resolve(
-      "fs/promises",
-      {
-        parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
-      },
-      nextResolve,
-    );
+    const result2 = resolve("fs/promises", ctx, nextResolve);
     assert.ok(
       !result2.url.startsWith("https://"),
       `Expected node built-in, got: ${result2.url}`,
     );
 
-    const result3 = resolve(
-      "./util.js",
-      {
-        parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
-      },
-      nextResolve,
-    );
+    const result3 = resolve("./util.js", ctx, nextResolve);
     assert.equal(
       result3.url,
       "https://esm.sh/v135/some-package@1.0.0/es2022/util.js",

@@ -1,6 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import type { ResolveHookContext, LoadHookContext } from "node:module";
 import { resolve, load } from "./hooks.ts";
+
+const defaultResolveContext: ResolveHookContext = {
+  conditions: [],
+  importAttributes: {},
+  parentURL: undefined,
+};
+
+const defaultLoadContext: LoadHookContext = {
+  conditions: [],
+  format: null,
+  importAttributes: {},
+};
 
 // A simple passthrough nextResolve that marks itself as called
 function makeNextResolve() {
@@ -24,7 +37,7 @@ function makeNextLoad() {
 describe("hooks.resolve (sync)", () => {
   it("should resolve HTTP URLs", () => {
     const next = makeNextResolve();
-    const result = resolve("https://esm.sh/ms@2.1.3", {}, next.fn);
+    const result = resolve("https://esm.sh/ms@2.1.3", defaultResolveContext, next.fn);
     assert.equal(result.shortCircuit, true);
     assert.ok(result.url.startsWith("https://"));
     assert.equal(next.wasCalled(), false);
@@ -32,14 +45,14 @@ describe("hooks.resolve (sync)", () => {
 
   it("should pass through non-HTTP specifiers to nextResolve", () => {
     const next = makeNextResolve();
-    const result = resolve("fs", {}, next.fn);
+    const result = resolve("fs", defaultResolveContext, next.fn);
     assert.equal(next.wasCalled(), true);
     assert.equal(result.url, "fs");
   });
 
   it("should strip npm: specifiers and delegate to nextResolve", () => {
     const next = makeNextResolve();
-    const result = resolve("npm:ms@2.1.3", {}, next.fn);
+    const result = resolve("npm:ms@2.1.3", defaultResolveContext, next.fn);
     assert.equal(next.wasCalled(), true);
     assert.equal(result.url, "ms");
   });
@@ -47,6 +60,7 @@ describe("hooks.resolve (sync)", () => {
   it("should resolve relative imports against HTTP parent URL", () => {
     const next = makeNextResolve();
     const result = resolve("./foo.js", {
+      ...defaultResolveContext,
       parentURL: "https://esm.sh/bar/index.js",
     }, next.fn);
     assert.equal(result.shortCircuit, true);
@@ -58,7 +72,7 @@ describe("hooks.resolve (sync)", () => {
 describe("hooks.load (sync)", () => {
   it("should load HTTP URLs and return source", () => {
     const next = makeNextLoad();
-    const result = load("https://esm.sh/ms@2.1.3", {}, next.fn);
+    const result = load("https://esm.sh/ms@2.1.3", defaultLoadContext, next.fn);
     assert.equal(result.shortCircuit, true);
     assert.ok(result.format);
     assert.equal(typeof result.source, "string");
@@ -68,7 +82,7 @@ describe("hooks.load (sync)", () => {
 
   it("should pass through non-HTTP URLs to nextLoad", () => {
     const next = makeNextLoad();
-    const result = load("file:///tmp/foo.js", {}, next.fn);
+    const result = load("file:///tmp/foo.js", defaultLoadContext, next.fn);
     assert.equal(next.wasCalled(), true);
   });
 });
