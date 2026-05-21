@@ -211,7 +211,7 @@ describe("tmp: writeTmpFile", () => {
   });
 
   it("should write file and create parent directories", async () => {
-    await writeTmpFile(testPath, "export default 42;\n");
+    writeTmpFile(testPath, "export default 42;\n");
     assert.ok(existsSync(testPath));
     const content = await readFile(testPath, "utf-8");
     assert.equal(content, "export default 42;\n");

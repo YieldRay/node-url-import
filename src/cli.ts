@@ -105,7 +105,7 @@ ${b("Environment:")}
 }
 
 if (values["clear-cache"]) {
-  await clearCache();
+  clearCache();
   console.log(`${styleText("green", "✓")} Cache cleared.`);
   process.exit(0);
 }

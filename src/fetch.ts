@@ -25,12 +25,12 @@ const reload: boolean = process.env.URL_IMPORT_RELOAD === "1";
  * @throws If the request fails or exceeds the redirect limit.
  */
 export async function fetchModule(url: string): Promise<CacheEntry> {
-  const cached = reload ? null : await readCache(url);
+  const cached = reload ? null : readCache(url);
 
   if (cached) {
     if (isLockEnabled()) {
-      await recordRedirect(url, cached.finalUrl);
-      await verifyLock(cached.finalUrl, cached.source);
+      recordRedirect(url, cached.finalUrl);
+      verifyLock(cached.finalUrl, cached.source);
     }
     return cached;
   }
@@ -74,11 +74,11 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
     const contentType: string =
       res.headers.get("content-type") || "application/javascript";
 
-    await writeCache(redirectChain, source, contentType);
+    writeCache(redirectChain, source, contentType);
 
     if (isLockEnabled()) {
-      await recordRedirect(url, currentUrl);
-      await verifyLock(currentUrl, source);
+      recordRedirect(url, currentUrl);
+      verifyLock(currentUrl, source);
     }
 
     downloadDone();

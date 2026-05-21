@@ -1,19 +1,16 @@
 /**
- * Synchronous HTTP fetch using Atomics.wait + a persistent worker thread.
+ * Synchronous module fetcher.
  *
- * On cache hit: reads directly from disk (sync fs), no worker involved.
- * On cache miss: posts to the worker, blocks with Atomics.wait until the
- * worker completes the async fetch, then reads the result via receiveMessageOnPort.
+ * On cache hit: reads from disk cache (sync).
+ * On cache miss: blocks via Atomics.wait while a persistent worker thread
+ * does the async HTTP fetch, then reads the result via receiveMessageOnPort.
  */
 
 import { Worker, MessageChannel, receiveMessageOnPort } from "node:worker_threads";
-import { readFileSync, existsSync } from "node:fs";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { readCache } from "./cache.ts";
 import type { CacheEntry } from "./cache.ts";
-import { cachePaths } from "./cache.ts";
-import { MAX_REDIRECTS } from "./constants.ts";
-
-const META_MARKER = "\n// denoCacheMetadata=";
 
 // Lazy-initialized worker
 let worker: Worker | null = null;
@@ -34,7 +31,6 @@ function getWorker(): Worker {
     const w = new Worker(resolveWorkerPath());
     w.unref(); // Don't keep the process alive
     w.on("error", () => {
-      // Reset so next call spawns a fresh worker
       worker = null;
     });
     w.on("exit", () => {
@@ -43,58 +39,6 @@ function getWorker(): Worker {
     worker = w;
   }
   return worker;
-}
-
-/**
- * Read from the Deno-format disk cache synchronously.
- * Returns null on cache miss. Follows redirect stubs up to MAX_REDIRECTS.
- */
-function readCacheSync(url: string, depth = 0): CacheEntry | null {
-  if (depth > MAX_REDIRECTS) return null;
-
-  const { file } = cachePaths(url);
-  if (!existsSync(file)) return null;
-
-  try {
-    const raw = readFileSync(file, "utf-8");
-
-    // Redirect stub: entire file is \n// denoCacheMetadata=<JSON>
-    if (raw.startsWith(META_MARKER)) {
-      const meta = JSON.parse(raw.slice(META_MARKER.length));
-      const location = meta.headers?.["location"];
-      if (!location) return null;
-      const resolved = new URL(location, meta.url).href;
-      return readCacheSync(resolved, depth + 1);
-    }
-
-    // Source entry: <source>\n// denoCacheMetadata=<JSON>
-    const metaIdx = raw.lastIndexOf(META_MARKER);
-    if (metaIdx === -1) {
-      // No metadata — treat whole file as source, infer content-type
-      return {
-        source: raw,
-        contentType: inferContentType(url),
-        url,
-        finalUrl: url,
-      };
-    }
-
-    const source = raw.slice(0, metaIdx);
-    const meta = JSON.parse(raw.slice(metaIdx + META_MARKER.length));
-    const contentType = meta.headers?.["content-type"] || inferContentType(url);
-    return { source, contentType, url: meta.url, finalUrl: meta.url };
-  } catch {
-    return null;
-  }
-}
-
-function inferContentType(url: string): string {
-  const pathname = new URL(url).pathname;
-  if (pathname.endsWith(".json")) return "application/json";
-  if (pathname.endsWith(".wasm")) return "application/wasm";
-  if (pathname.endsWith(".ts") || pathname.endsWith(".tsx"))
-    return "text/typescript";
-  return "application/javascript";
 }
 
 interface WorkerResponse {
@@ -113,7 +57,7 @@ export function fetchModuleSync(url: string): CacheEntry {
   // Fast path: check disk cache synchronously
   const reload = process.env.URL_IMPORT_RELOAD === "1";
   if (!reload) {
-    const cached = readCacheSync(url);
+    const cached = readCache(url);
     if (cached) return cached;
   }
 

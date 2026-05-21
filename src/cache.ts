@@ -1,7 +1,6 @@
 import process from "node:process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 
@@ -67,11 +66,13 @@ function inferContentType(url: string): string {
   return "application/javascript";
 }
 
-export async function readCache(url: string): Promise<CacheEntry | null> {
+export function readCache(url: string, depth = 0): CacheEntry | null {
+  if (depth > 10) return null;
+
   const { file } = cachePaths(url);
   if (!existsSync(file)) return null;
   try {
-    const raw = await readFile(file, "utf-8");
+    const raw = readFileSync(file, "utf-8");
 
     // Redirect stub: entire file is \n// denoCacheMetadata=<JSON>
     if (raw.startsWith(META_MARKER)) {
@@ -79,7 +80,7 @@ export async function readCache(url: string): Promise<CacheEntry | null> {
       const location = meta.headers["location"];
       if (!location) return null;
       const resolved = new URL(location, meta.url).href;
-      const result = await readCache(resolved);
+      const result = readCache(resolved, depth + 1);
       if (result) return { ...result, url };
       return null;
     }
@@ -107,11 +108,11 @@ export async function readCache(url: string): Promise<CacheEntry | null> {
 }
 
 // redirectChain is the full list of URLs traversed: [original, ...intermediates, final]
-export async function writeCache(
+export function writeCache(
   redirectChain: string[],
   source: string,
   contentType: string,
-): Promise<void> {
+): void {
   const finalUrl = redirectChain[redirectChain.length - 1]!;
 
   // Write a redirect stub for every hop except the last
@@ -119,27 +120,27 @@ export async function writeCache(
     const from = redirectChain[i]!;
     const to = redirectChain[i + 1]!;
     const { dir, file } = cachePaths(from);
-    await mkdir(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true });
     const meta: DenoCacheMetadata = {
       headers: { "content-length": "0", location: to },
       url: from,
       time: Math.floor(Date.now() / 1000),
     };
-    await writeFile(file, META_MARKER + JSON.stringify(meta), "utf-8");
+    writeFileSync(file, META_MARKER + JSON.stringify(meta), "utf-8");
   }
 
   // Write source entry: <source>\n// denoCacheMetadata=<JSON>
   const { dir, file } = cachePaths(finalUrl);
-  await mkdir(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true });
   const meta: DenoCacheMetadata = {
     headers: { "content-type": contentType },
     url: finalUrl,
     time: Math.floor(Date.now() / 1000),
   };
-  await writeFile(file, source + META_MARKER + JSON.stringify(meta), "utf-8");
+  writeFileSync(file, source + META_MARKER + JSON.stringify(meta), "utf-8");
 }
 
 /** Remove all cached remote modules from `$DENO_DIR/remote/`. */
-export async function clearCache(): Promise<void> {
-  await rm(CACHE_DIR, { recursive: true, force: true });
+export function clearCache(): void {
+  rmSync(CACHE_DIR, { recursive: true, force: true });
 }

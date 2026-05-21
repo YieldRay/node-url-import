@@ -10,7 +10,7 @@
 import { pathToFileURL } from "node:url";
 import { fetchModuleSync } from "./sync-fetch.ts";
 import { isHttpUrl } from "./constants.ts";
-import { tmpEnabled, urlToTmpPath, writeTmpFileSync, tmpPathToUrl } from "./tmp.ts";
+import { tmpEnabled, urlToTmpPath, writeTmpFile, tmpPathToUrl } from "./tmp.ts";
 
 /**
  * Strip `npm:` prefix and optional `@version` from an npm specifier.
@@ -135,7 +135,7 @@ export function resolve(
 
     if (tmpEnabled) {
       const tmpPath = urlToTmpPath(finalUrl, contentType);
-      writeTmpFileSync(tmpPath, source);
+      writeTmpFile(tmpPath, source);
       const format = inferFormat(finalUrl, contentType);
       return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
     }
@@ -156,7 +156,7 @@ export function resolve(
       const resolved = new URL(specifier, parentHttpUrl).href;
       const { finalUrl, source, contentType } = fetchModuleSync(resolved);
       const tmpPath = urlToTmpPath(finalUrl, contentType);
-      writeTmpFileSync(tmpPath, source);
+      writeTmpFile(tmpPath, source);
       const format = inferFormat(finalUrl, contentType);
       return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
     }

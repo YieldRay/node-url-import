@@ -18,8 +18,7 @@
 
 import process from "node:process";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 const LOCK_VERSION = "5";
 
@@ -39,12 +38,12 @@ export function hashSource(source: string): string {
   return createHash("sha256").update(source).digest("hex");
 }
 
-async function loadLockFile(): Promise<LockFileData> {
+function loadLockFile(): LockFileData {
   if (lockData) return lockData;
 
   if (lockPath && existsSync(lockPath)) {
     try {
-      const raw = await readFile(lockPath, "utf-8");
+      const raw = readFileSync(lockPath, "utf-8");
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed.remote === "object") {
         lockData = {
@@ -65,7 +64,7 @@ async function loadLockFile(): Promise<LockFileData> {
   return lockData;
 }
 
-async function flushLockFile(): Promise<void> {
+function flushLockFile(): void {
   if (!lockPath || !dirty || !lockData) return;
   // Output sections in Deno's order: version, redirects (if non-empty), remote
   const out: Record<string, unknown> = { version: lockData.version };
@@ -74,7 +73,7 @@ async function flushLockFile(): Promise<void> {
   }
   out.remote = lockData.remote;
   const json = JSON.stringify(out, null, 2) + "\n";
-  await writeFile(lockPath, json, "utf-8");
+  writeFileSync(lockPath, json, "utf-8");
   dirty = false;
 }
 
@@ -86,10 +85,10 @@ export function isLockEnabled(): boolean {
  * Record a redirect in the lock file (original URL → final URL).
  * Only records when they differ.
  */
-export async function recordRedirect(from: string, to: string): Promise<void> {
+export function recordRedirect(from: string, to: string): void {
   if (!lockPath || from === to) return;
 
-  const data = await loadLockFile();
+  const data = loadLockFile();
   const existing = data.redirects[from];
 
   if (existing === to) return;
@@ -102,16 +101,16 @@ export async function recordRedirect(from: string, to: string): Promise<void> {
 
   data.redirects[from] = to;
   dirty = true;
-  await flushLockFile();
+  flushLockFile();
 }
 
 /**
  * Verify a fetched module's source against the lock file.
  */
-export async function verifyLock(url: string, source: string): Promise<void> {
+export function verifyLock(url: string, source: string): void {
   if (!lockPath) return;
 
-  const data = await loadLockFile();
+  const data = loadLockFile();
   const hash = hashSource(source);
   const existing = data.remote[url];
 
@@ -142,5 +141,5 @@ export async function verifyLock(url: string, source: string): Promise<void> {
 
   data.remote[url] = hash;
   dirty = true;
-  await flushLockFile();
+  flushLockFile();
 }
