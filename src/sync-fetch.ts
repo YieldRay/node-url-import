@@ -6,7 +6,11 @@
  * does the async HTTP fetch, then reads the result via receiveMessageOnPort.
  */
 
-import { Worker, MessageChannel, receiveMessageOnPort } from "node:worker_threads";
+import {
+  Worker,
+  MessageChannel,
+  receiveMessageOnPort,
+} from "node:worker_threads";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { readCache } from "./cache.ts";
@@ -69,12 +73,10 @@ export function fetchModuleSync(url: string): CacheEntry {
 
   w.postMessage({ url, sab, port: port2 }, [port2]);
 
-  // Block until the worker signals completion
-  // Timeout after 30 seconds to avoid infinite hangs
-  const result = Atomics.wait(signal, 0, 0, 30_000);
-  if (result === "timed-out") {
+  // Block until the worker signals completion (actually no timeout — matches Deno behavior)
+  if (Atomics.wait(signal, 0, 0) === "timed-out") {
     port1.close();
-    throw new Error(`Timed out fetching ${url} (30s)`);
+    throw new Error(`Timed out fetching ${url}`);
   }
 
   // Read the result from the port

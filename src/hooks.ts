@@ -1,17 +1,19 @@
 /**
- * Synchronous resolve + load hooks for module.registerHooks().
+ * Shared resolve + load hook logic, parameterized by the fetch function.
  *
- * These hooks intercept both import() and require() calls for HTTP(S) URLs.
- * They use fetchModuleSync() which blocks via Atomics.wait on cache miss.
+ * - For module.registerHooks() (sync): uses fetchModuleSync
+ * - For module.register() (async, in loader worker): uses fetchModule (async)
  *
- * Requires Node.js 22.15+ or 23.5+.
+ * Exported factory functions createResolve/createLoad produce the hook
+ * functions. Also exports ready-made sync versions for registerHooks.
  */
 
-import type { ResolveHookContext, ResolveFnOutput, LoadHookContext, LoadFnOutput } from "node:module";
+import type { ResolveHookContext, ResolveFnOutput, LoadHookContext, LoadFnOutput, ResolveHookSync, LoadHookSync } from "node:module";
 import { pathToFileURL } from "node:url";
 import { fetchModuleSync } from "./sync-fetch.ts";
 import { isHttpUrl } from "./constants.ts";
 import { tmpEnabled, urlToTmpPath, writeTmpFile, tmpPathToUrl } from "./tmp.ts";
+import type { CacheEntry } from "./cache.ts";
 
 /**
  * Strip `npm:` prefix and optional `@version` from an npm specifier.
@@ -72,10 +74,7 @@ function getHttpParentUrl(parentURL: string | undefined): string | null {
   return extractHttpUrlFromParent(parentURL);
 }
 
-type NextResolve = (specifier: string, context?: Partial<ResolveHookContext>) => ResolveFnOutput;
-type NextLoad = (url: string, context?: Partial<LoadHookContext>) => LoadFnOutput;
-
-function inferFormat(url: string, contentType: string): string {
+export function inferFormat(url: string, contentType: string): string {
   const ct = contentType.toLowerCase();
 
   if (ct.includes("application/json")) return "json";
@@ -92,77 +91,127 @@ function inferFormat(url: string, contentType: string): string {
   return "module";
 }
 
-export function resolve(
-  specifier: string,
-  context: ResolveHookContext,
-  nextResolve: NextResolve,
-): ResolveFnOutput {
-  // npm: specifier — strip prefix and version, let Node resolve from node_modules.
-  if (specifier.startsWith("npm:")) {
-    return nextResolve(stripNpmSpecifier(specifier), context);
-  }
+// Infer NextResolve/NextLoad from Node's sync hook types
+type NextResolve = Parameters<ResolveHookSync>[2];
+type NextLoad = Parameters<LoadHookSync>[2];
 
-  // Direct HTTP(S) URL
-  if (isHttpUrl(specifier)) {
-    const { finalUrl, source, contentType } = fetchModuleSync(specifier);
+// Async hook types (same params as sync, but return Promise)
+type ResolveHookAsync = (...args: Parameters<ResolveHookSync>) => Promise<ResolveFnOutput>;
+type LoadHookAsync = (...args: Parameters<LoadHookSync>) => Promise<LoadFnOutput>;
 
-    if (tmpEnabled) {
-      const tmpPath = urlToTmpPath(finalUrl, contentType);
-      writeTmpFile(tmpPath, source);
-      const format = inferFormat(finalUrl, contentType);
-      return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
+/**
+ * Create a resolve hook parameterized by the fetch function.
+ * Sync fetchFn produces ResolveHookSync, async produces ResolveHookAsync.
+ */
+export function createResolve(fetchFn: (url: string) => CacheEntry): ResolveHookSync;
+export function createResolve(fetchFn: (url: string) => Promise<CacheEntry>): ResolveHookAsync;
+export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>) {
+  return function resolve(
+    specifier: string,
+    context: ResolveHookContext,
+    nextResolve: NextResolve,
+  ): ResolveFnOutput | Promise<ResolveFnOutput> {
+    // npm: specifier — strip prefix and version, let Node resolve from node_modules.
+    if (specifier.startsWith("npm:")) {
+      return nextResolve(stripNpmSpecifier(specifier), context);
     }
 
-    return { shortCircuit: true, url: finalUrl };
-  }
+    // Direct HTTP(S) URL
+    if (isHttpUrl(specifier)) {
+      const result = fetchFn(specifier);
 
-  // --tmp mode: relative import inside a module under the tmp dir
-  if (
-    tmpEnabled &&
-    context.parentURL &&
-    (specifier.startsWith("./") ||
-      specifier.startsWith("../") ||
-      specifier.startsWith("/"))
-  ) {
-    const parentHttpUrl = tmpPathToUrl(context.parentURL);
-    if (parentHttpUrl) {
-      const resolved = new URL(specifier, parentHttpUrl).href;
-      const { finalUrl, source, contentType } = fetchModuleSync(resolved);
-      const tmpPath = urlToTmpPath(finalUrl, contentType);
-      writeTmpFile(tmpPath, source);
-      const format = inferFormat(finalUrl, contentType);
-      return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
+      const handleFetched = (entry: CacheEntry): ResolveFnOutput => {
+        if (tmpEnabled) {
+          const tmpPath = urlToTmpPath(entry.finalUrl, entry.contentType);
+          writeTmpFile(tmpPath, entry.source);
+          const format = inferFormat(entry.finalUrl, entry.contentType);
+          return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
+        }
+        return { shortCircuit: true, url: entry.finalUrl };
+      };
+
+      if (result instanceof Promise) {
+        return result.then(handleFetched);
+      }
+      return handleFetched(result);
     }
-  }
 
-  // Relative or absolute-path import inside an HTTP-loaded module.
-  // Also handles the case where Node mangles HTTP URLs into file paths for CJS require.
-  if (
-    context.parentURL &&
-    (specifier.startsWith("./") ||
-      specifier.startsWith("../") ||
-      specifier.startsWith("/"))
-  ) {
-    const httpParent = getHttpParentUrl(context.parentURL);
-    if (httpParent) {
-      const resolved = new URL(specifier, httpParent).href;
-      return { shortCircuit: true, url: resolved };
+    // --tmp mode: relative import inside a module under the tmp dir
+    if (
+      tmpEnabled &&
+      context.parentURL &&
+      (specifier.startsWith("./") ||
+        specifier.startsWith("../") ||
+        specifier.startsWith("/"))
+    ) {
+      const parentHttpUrl = tmpPathToUrl(context.parentURL);
+      if (parentHttpUrl) {
+        const resolved = new URL(specifier, parentHttpUrl).href;
+        const result = fetchFn(resolved);
+
+        const handleFetched = (entry: CacheEntry): ResolveFnOutput => {
+          const tmpPath = urlToTmpPath(entry.finalUrl, entry.contentType);
+          writeTmpFile(tmpPath, entry.source);
+          const format = inferFormat(entry.finalUrl, entry.contentType);
+          return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
+        };
+
+        if (result instanceof Promise) {
+          return result.then(handleFetched);
+        }
+        return handleFetched(result);
+      }
     }
-  }
 
-  return nextResolve(specifier, context);
+    // Relative or absolute-path import inside an HTTP-loaded module.
+    // Also handles the case where Node mangles HTTP URLs into file paths for CJS require.
+    if (
+      context.parentURL &&
+      (specifier.startsWith("./") ||
+        specifier.startsWith("../") ||
+        specifier.startsWith("/"))
+    ) {
+      const httpParent = getHttpParentUrl(context.parentURL);
+      if (httpParent) {
+        const resolved = new URL(specifier, httpParent).href;
+        return { shortCircuit: true, url: resolved };
+      }
+    }
+
+    return nextResolve(specifier, context);
+  };
 }
 
-export function load(
-  url: string,
-  context: LoadHookContext,
-  nextLoad: NextLoad,
-): LoadFnOutput {
-  if (isHttpUrl(url)) {
-    const { source, contentType } = fetchModuleSync(url);
-    const format = inferFormat(url, contentType);
-    return { shortCircuit: true, format, source };
-  }
+/**
+ * Create a load hook parameterized by the fetch function.
+ * Sync fetchFn produces LoadHookSync, async produces LoadHookAsync.
+ */
+export function createLoad(fetchFn: (url: string) => CacheEntry): LoadHookSync;
+export function createLoad(fetchFn: (url: string) => Promise<CacheEntry>): LoadHookAsync;
+export function createLoad(fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>) {
+  return function load(
+    url: string,
+    context: LoadHookContext,
+    nextLoad: NextLoad,
+  ): LoadFnOutput | Promise<LoadFnOutput> {
+    if (isHttpUrl(url)) {
+      const result = fetchFn(url);
 
-  return nextLoad(url, context);
+      const handleFetched = (entry: CacheEntry): LoadFnOutput => {
+        const format = inferFormat(url, entry.contentType);
+        return { shortCircuit: true, format, source: entry.source };
+      };
+
+      if (result instanceof Promise) {
+        return result.then(handleFetched);
+      }
+      return handleFetched(result);
+    }
+
+    return nextLoad(url, context);
+  };
 }
+
+// Ready-made sync hooks for module.registerHooks()
+export const resolve = createResolve(fetchModuleSync);
+export const load = createLoad(fetchModuleSync);
