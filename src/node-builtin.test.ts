@@ -18,14 +18,14 @@ describe("node built-in from remote module", () => {
   });
 
   it("should not resolve bare specifiers against HTTP parent URL", async () => {
-    const { resolve } = await import("./loader.ts");
+    const { resolve } = await import("./hooks.ts");
 
-    const nextResolve = async (spec: string) => ({
+    const nextResolve = (spec: string) => ({
       url: `node:${spec}`,
       shortCircuit: true as const,
     });
 
-    const result = await resolve(
+    const result = resolve(
       "node:fs",
       {
         parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
@@ -37,7 +37,7 @@ describe("node built-in from remote module", () => {
       `Expected node built-in, got: ${result.url}`,
     );
 
-    const result2 = await resolve(
+    const result2 = resolve(
       "fs/promises",
       {
         parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",
@@ -49,7 +49,7 @@ describe("node built-in from remote module", () => {
       `Expected node built-in, got: ${result2.url}`,
     );
 
-    const result3 = await resolve(
+    const result3 = resolve(
       "./util.js",
       {
         parentURL: "https://esm.sh/v135/some-package@1.0.0/es2022/index.mjs",

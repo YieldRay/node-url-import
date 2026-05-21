@@ -10,8 +10,38 @@
 import { pathToFileURL } from "node:url";
 import { fetchModuleSync } from "./sync-fetch.ts";
 import { isHttpUrl } from "./constants.ts";
-import { stripNpmSpecifier } from "./loader.ts";
 import { tmpEnabled, urlToTmpPath, writeTmpFileSync, tmpPathToUrl } from "./tmp.ts";
+
+/**
+ * Strip `npm:` prefix and optional `@version` from an npm specifier.
+ *   npm:ms@2.1.3           → ms
+ *   npm:@scope/pkg@1.0.0   → @scope/pkg
+ *   npm:@scope/pkg@1.0.0/s → @scope/pkg/s
+ *   npm:lodash-es          → lodash-es
+ */
+export function stripNpmSpecifier(specifier: string): string {
+  let bare = specifier.slice(4); // remove "npm:"
+
+  // For scoped packages (@scope/pkg@version), the version @ is after the first /
+  // For unscoped packages (pkg@version), the version @ is the first @
+  const isScoped = bare.startsWith("@");
+  const versionAtIdx = isScoped
+    ? bare.indexOf("@", bare.indexOf("/") + 1)
+    : bare.indexOf("@");
+
+  if (versionAtIdx > 0) {
+    const afterAt = bare.indexOf("/", versionAtIdx);
+    if (afterAt > 0) {
+      // @scope/pkg@version/subpath → @scope/pkg/subpath
+      bare = bare.slice(0, versionAtIdx) + bare.slice(afterAt);
+    } else {
+      // @scope/pkg@version → @scope/pkg
+      bare = bare.slice(0, versionAtIdx);
+    }
+  }
+
+  return bare;
+}
 
 type ModuleFormat = "module" | "commonjs" | "json" | "wasm";
 

@@ -5,8 +5,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { parseArgs, styleText } from "node:util";
 import { NAME, isHttpUrl } from "./constants.ts";
-import { importMetaUrl as registerImportMetaUrl } from "./register.ts";
-import { importMetaUrl as loaderImportMetaUrl } from "./loader.ts";
+import { importMetaUrl as registerImportMetaUrl } from "./register-hooks.ts";
 import { clearCache } from "./cache.ts";
 
 // Argument layout:
@@ -111,62 +110,31 @@ if (values["clear-cache"]) {
   process.exit(0);
 }
 
-const nodeVersion: number[] = process.versions.node.split(".").map(Number);
-const supportsImport: boolean =
-  nodeVersion[0]! > 20 ||
-  (nodeVersion[0] === 20 && nodeVersion[1]! >= 6) ||
-  (nodeVersion[0] === 18 && nodeVersion[1]! >= 19);
-
 // Build node command:
-//   node [--import register] [node-flags] <target-or-eval> -- [script-args]
+//   node --import register-hooks <target-or-eval> [script-args]
 let nodeArgs: string[];
 
 if (isHttpUrl(target!)) {
   const evalScript = `import ${JSON.stringify(target)};`;
-
-  if (supportsImport) {
-    nodeArgs = [
-      "--import",
-      registerImportMetaUrl,
-      ...nodeFlags,
-      "--input-type=module",
-      "-e",
-      evalScript,
-      "--",
-      ...scriptArgs,
-    ];
-  } else {
-    nodeArgs = [
-      "--loader",
-      loaderImportMetaUrl,
-      ...nodeFlags,
-      "--input-type=module",
-      "-e",
-      evalScript,
-      "--",
-      ...scriptArgs,
-    ];
-  }
+  nodeArgs = [
+    "--import",
+    registerImportMetaUrl,
+    ...nodeFlags,
+    "--input-type=module",
+    "-e",
+    evalScript,
+    "--",
+    ...scriptArgs,
+  ];
 } else {
-  if (supportsImport) {
-    nodeArgs = [
-      "--import",
-      registerImportMetaUrl,
-      ...nodeFlags,
-      target!,
-      "--",
-      ...scriptArgs,
-    ];
-  } else {
-    nodeArgs = [
-      "--experimental-loader",
-      loaderImportMetaUrl,
-      ...nodeFlags,
-      target!,
-      "--",
-      ...scriptArgs,
-    ];
-  }
+  nodeArgs = [
+    "--import",
+    registerImportMetaUrl,
+    ...nodeFlags,
+    target!,
+    "--",
+    ...scriptArgs,
+  ];
 }
 
 // Pass our flags to the child process via environment variables.

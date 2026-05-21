@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { stripNpmSpecifier } from "./loader.ts";
+import { stripNpmSpecifier } from "./hooks.ts";
 
 describe("npm: specifier", () => {
   it("should strip npm: prefix", () => {
