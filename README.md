@@ -1,6 +1,6 @@
 # node-url-import
 
-Node.js hook that lets you `import` modules directly from HTTP(S) URLs like Deno.
+Node.js hook that lets you `import` (and `require`) modules directly from HTTP(S) URLs like Deno.
 
 ```js
 import { add } from "https://esm.sh/lodash-es";
@@ -8,7 +8,13 @@ import { add } from "https://esm.sh/lodash-es";
 console.log(add(1, 2)); // 3
 ```
 
-Works with static imports, dynamic `import()`, and relative imports inside remote modules. Fetched modules are cached on disk so subsequent runs are instant.
+```js
+// CJS require also works (Node 24+)
+const { default: ms } = require("https://esm.sh/ms@2.1.3");
+console.log(ms("2 days")); // 172800000
+```
+
+Works with static imports, dynamic `import()`, CJS `require()`, and relative imports inside remote modules. Fetched modules are cached on disk so subsequent runs are instant.
 
 ## Usage
 
@@ -61,7 +67,13 @@ Register the hook yourself with `--import`:
 node --import node-url-import/register ./app.mjs
 ```
 
-Or the legacy `--loader` flag:
+On Node 24+, CJS files can `require()` HTTP URLs too:
+
+```sh
+node --import node-url-import/register ./app.cjs
+```
+
+Or the legacy `--loader` flag (ESM only):
 
 ```sh
 node --loader node-url-import/loader ./app.mjs
@@ -93,12 +105,21 @@ await clearCache();
 
 ## How it works
 
-1. The ESM loader hooks (`resolve` + `load`) intercept any specifier starting with `http://` or `https://`.
+1. On Node 22.15+, synchronous hooks (`module.registerHooks()`) intercept both `import` and `require` calls for HTTP(S) URLs. On older Node, async hooks (`module.register()`) support ESM `import` only.
 2. `resolve` follows redirects to the final URL so that relative imports inside a remote module (e.g. `import "./util.js"`) resolve against the correct base. Bare specifiers like `"node:fs"` fall through to Node's default resolver.
 3. Fetched sources are cached in Deno's remote module cache (`$DENO_DIR/remote/`, defaulting to `~/Library/Caches/deno/remote/` on macOS and `~/.cache/deno/remote/` on Linux), using the same file layout as Deno — so both runtimes share the same cache.
-4. Cached modules are used forever until `--reload` is passed or `--clear-cache` is used (same as Deno).
-5. Module format is inferred from the `Content-Type` header and URL extension, defaulting to ESM.
-6. A Deno-style progress bar is shown on stderr during downloads (only on TTY).
+4. For `require()` (synchronous), cache hits are served via `readFileSync`. On cache miss, a persistent worker thread fetches asynchronously while the main thread blocks via `Atomics.wait`.
+5. Cached modules are used forever until `--reload` is passed or `--clear-cache` is used (same as Deno).
+6. Module format is inferred from the `Content-Type` header and URL extension, defaulting to ESM.
+7. A Deno-style progress bar is shown on stderr during downloads (only on TTY).
+
+## Node.js version compatibility
+
+| Feature | Minimum Node.js |
+|---------|----------------|
+| ESM `import` (via `module.register`) | 18.19+ / 20.6+ |
+| ESM `import` (via `module.registerHooks`) | 22.15+ |
+| CJS `require` of HTTP URLs | 24+ |
 
 ## Options
 
