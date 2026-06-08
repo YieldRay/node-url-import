@@ -3,6 +3,7 @@
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs, styleText } from "node:util";
 import { NAME, isHttpUrl } from "./constants.ts";
 import { importMetaUrl as registerImportMetaUrl } from "./register-hooks.ts";
@@ -111,18 +112,21 @@ if (values["clear-cache"]) {
 }
 
 // Build node command:
-//   node --import register-hooks <target-or-eval> [script-args]
+//   node --import register-hooks <target-or-entry> [script-args]
 let nodeArgs: string[];
 
 if (isHttpUrl(target!)) {
-  const evalScript = `import ${JSON.stringify(target)};`;
+  // Pass any existing file as the entry point. The resolve hook (triggered by
+  // URL_IMPORT_MAIN env var) redirects entry-point resolution to the HTTP URL,
+  // making the remote module the true main module (import.meta.main === true).
+  // We reuse the register-hooks file since it's guaranteed to exist.
+  const entryPlaceholder = fileURLToPath(registerImportMetaUrl);
+
   nodeArgs = [
     "--import",
     registerImportMetaUrl,
     ...nodeFlags,
-    "--input-type=module",
-    "-e",
-    evalScript,
+    entryPlaceholder,
     "--",
     ...scriptArgs,
   ];
@@ -140,6 +144,9 @@ if (isHttpUrl(target!)) {
 // Pass our flags to the child process via environment variables.
 const env: Record<string, string | undefined> = { ...process.env };
 
+if (isHttpUrl(target!)) {
+  env.URL_IMPORT_MAIN = target;
+}
 if (values.tmp) {
   env.URL_IMPORT_TMP = "1";
 }

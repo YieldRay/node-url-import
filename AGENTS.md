@@ -87,6 +87,12 @@ import "https://…" / require("https://…")
 - All filesystem operations are synchronous (`readFileSync`, `writeFileSync`, `mkdirSync`)
 - Cache format is Deno-compatible; don't change the metadata comment format
 
+### CLI entry-point redirect (hooks.ts + cli.ts)
+- When the CLI target is an HTTP URL, it sets `URL_IMPORT_MAIN=<url>` and passes an existing file as the entry point
+- The resolve hook detects `URL_IMPORT_MAIN` + no `parentURL` (entry-point resolution) and redirects to the HTTP URL
+- This makes `import.meta.main === true` and `import.meta.url` reflect the remote URL
+- `process.argv[1]` will be the placeholder file path (known limitation)
+
 ### CLI flag forwarding
 - The CLI spawns a child `node` process rather than running inline
 - Own flags (`--reload`, `--lock`, etc.) are translated to environment variables so the loader thread picks them up
@@ -113,3 +119,5 @@ fnm use 24 && node --import ./src/register-hooks.ts -e "require('https://esm.sh/
 ## Environment Variables (set by CLI, read by hooks)
 
 `URL_IMPORT_RELOAD`, `URL_IMPORT_LOCK`, `URL_IMPORT_TMP` — the CLI translates its own flags into these so the loader thread picks them up. Don't read CLI flags directly in hook code.
+
+`URL_IMPORT_MAIN` — set by the CLI when the target is an HTTP URL. The resolve hook reads this at module load time and redirects the entry-point resolution to the HTTP URL.

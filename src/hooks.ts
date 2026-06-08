@@ -82,7 +82,7 @@ function getHttpParentUrl(parentURL: string | undefined): string | null {
  * @see https://nodejs.org/docs/latest-v22.x/api/cli.html#--no-experimental-strip-types
  */
 const supportsTypeScriptFormat: boolean = (() => {
-  const [major, minor] = process.versions.node.split(".").map(Number) as [number, number];
+  const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
   return major > 22 || (major === 22 && minor >= 18);
 })();
 
@@ -118,6 +118,14 @@ type ResolveHookAsync = (...args: Parameters<ResolveHookSync>) => Promise<Resolv
 type LoadHookAsync = (...args: Parameters<LoadHookSync>) => Promise<LoadFnOutput>;
 
 /**
+ * The HTTP URL to treat as the main entry module. When set, the resolve hook
+ * redirects the entry-point file resolution to this URL so that
+ * import.meta.main is true and import.meta.url reflects the remote URL.
+ * Set by the CLI via the URL_IMPORT_MAIN environment variable.
+ */
+const mainUrl: string | undefined = process.env.URL_IMPORT_MAIN;
+
+/**
  * Create a resolve hook parameterized by the fetch function.
  * Sync fetchFn produces ResolveHookSync, async produces ResolveHookAsync.
  */
@@ -129,6 +137,13 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
     context: ResolveHookContext,
     nextResolve: NextResolve,
   ): ResolveFnOutput | Promise<ResolveFnOutput> {
+    // Entry-point redirect: when the CLI sets URL_IMPORT_MAIN, the first
+    // resolve call (parentURL is undefined) for the dummy entry file is
+    // redirected to the HTTP URL so Node treats it as the main module.
+    if (mainUrl && !context.parentURL && !isHttpUrl(specifier)) {
+      return { shortCircuit: true, url: mainUrl };
+    }
+
     // npm: specifier — strip prefix and version, let Node resolve from node_modules.
     if (specifier.startsWith("npm:")) {
       return nextResolve(stripNpmSpecifier(specifier), context);

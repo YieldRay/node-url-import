@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import process from "node:process";
+import { spawnSync } from "node:child_process";
 import type { ResolveHookContext, LoadHookContext } from "node:module";
 import { resolve, load, inferFormat } from "./hooks.ts";
 
@@ -144,5 +146,34 @@ describe("inferFormat", () => {
 
   it("should default to module for unknown extension", () => {
     assert.equal(inferFormat("https://example.com/mod", "application/javascript"), "module");
+  });
+});
+
+describe("CLI entry-point redirect", () => {
+  it("should set import.meta.main to true for HTTP URL target", () => {
+    const result = spawnSync(
+      process.execPath,
+      ["src/cli.ts", "https://crux.land/api/get/7UE79f.ts"],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env },
+        encoding: "utf-8",
+        timeout: 30_000,
+      },
+    );
+    assert.equal(
+      result.status,
+      0,
+      `CLI exited with ${result.status}\nstderr: ${result.stderr}`,
+    );
+    // The crux.land script prints: C, import.meta.main, import.meta.url
+    assert.ok(
+      result.stdout.includes("true"),
+      `Expected import.meta.main to be true, got: ${result.stdout}`,
+    );
+    assert.ok(
+      result.stdout.includes("https://crux.land/api/get/7UE79f.ts"),
+      `Expected import.meta.url to be the HTTP URL, got: ${result.stdout}`,
+    );
   });
 });
