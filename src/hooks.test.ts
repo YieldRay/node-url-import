@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { ResolveHookContext, LoadHookContext } from "node:module";
-import { resolve, load } from "./hooks.ts";
+import { resolve, load, inferFormat } from "./hooks.ts";
 
 const defaultResolveContext: ResolveHookContext = {
   conditions: [],
@@ -84,5 +84,65 @@ describe("hooks.load (sync)", () => {
     const next = makeNextLoad();
     const result = load("file:///tmp/foo.js", defaultLoadContext, next.fn);
     assert.equal(next.wasCalled(), true);
+  });
+
+  it("should load remote TypeScript module with module-typescript format", () => {
+    const next = makeNextLoad();
+    const result = load("https://deno.land/std@0.224.0/path/mod.ts", defaultLoadContext, next.fn);
+    assert.equal(result.shortCircuit, true);
+    assert.equal(result.format, "module-typescript");
+    assert.equal(typeof result.source, "string");
+    assert.ok((result.source as string).length > 0);
+    assert.equal(next.wasCalled(), false);
+  });
+});
+
+describe("inferFormat", () => {
+  it("should return module-typescript for .ts extension", () => {
+    assert.equal(inferFormat("https://example.com/mod.ts", "application/javascript"), "module-typescript");
+  });
+
+  it("should return module-typescript for .tsx extension", () => {
+    assert.equal(inferFormat("https://example.com/mod.tsx", "application/javascript"), "module-typescript");
+  });
+
+  it("should return module-typescript for .mts extension", () => {
+    assert.equal(inferFormat("https://example.com/mod.mts", "application/javascript"), "module-typescript");
+  });
+
+  it("should return commonjs-typescript for .cts extension", () => {
+    assert.equal(inferFormat("https://example.com/mod.cts", "application/javascript"), "commonjs-typescript");
+  });
+
+  it("should return module-typescript for text/typescript content-type", () => {
+    assert.equal(inferFormat("https://example.com/mod", "text/typescript"), "module-typescript");
+  });
+
+  it("should return module-typescript for application/typescript content-type", () => {
+    assert.equal(inferFormat("https://example.com/mod", "application/typescript; charset=utf-8"), "module-typescript");
+  });
+
+  it("should return module for .js extension", () => {
+    assert.equal(inferFormat("https://example.com/mod.js", "application/javascript"), "module");
+  });
+
+  it("should return module for .mjs extension", () => {
+    assert.equal(inferFormat("https://example.com/mod.mjs", "application/javascript"), "module");
+  });
+
+  it("should return commonjs for .cjs extension", () => {
+    assert.equal(inferFormat("https://example.com/mod.cjs", "application/javascript"), "commonjs");
+  });
+
+  it("should return json for .json extension", () => {
+    assert.equal(inferFormat("https://example.com/data.json", "application/json"), "json");
+  });
+
+  it("should return wasm for .wasm extension", () => {
+    assert.equal(inferFormat("https://example.com/mod.wasm", "application/wasm"), "wasm");
+  });
+
+  it("should default to module for unknown extension", () => {
+    assert.equal(inferFormat("https://example.com/mod", "application/javascript"), "module");
   });
 });

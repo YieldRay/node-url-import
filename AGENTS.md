@@ -47,7 +47,7 @@ import "https://…" / require("https://…")
 
 | File | Role |
 |---|---|
-| `src/hooks.ts` | Synchronous `resolve` + `load` hooks (for `module.registerHooks()`); `npm:` specifier stripping; format inference; handles CJS parentURL mangling for transitive imports |
+| `src/hooks.ts` | Synchronous `resolve` + `load` hooks (for `module.registerHooks()`); `npm:` specifier stripping; format inference (including TypeScript → `module-typescript`); handles CJS parentURL mangling for transitive imports |
 | `src/loader.ts` | Async `resolve` + `load` hooks (for `module.register()`); thin wrapper delegating to hooks.ts |
 | `src/register-hooks.ts` | Entry point: calls `module.registerHooks()` on Node 22.15+, falls back to `module.register()` on 18.19+/20.6+ |
 | `src/sync-fetch.ts` | Checks disk cache with `readFileSync`, on miss blocks via `Atomics.wait` while worker fetches |
@@ -81,6 +81,7 @@ import "https://…" / require("https://…")
 ### Worker path resolution (sync-fetch.ts)
 - Worker file path must resolve from both `.ts` (dev, Node 24+ type-stripping) and compiled `.js` (dist)
 - Uses `import.meta.url` + relative path; do NOT hardcode absolute paths
+- Worker is created with `execArgv: []` — do NOT inherit parent's execArgv (flags like `--input-type`, `--tls-cipher-list` are invalid for workers and cause silent hangs)
 
 ### Cache (cache.ts) and Lock (lock.ts)
 - All filesystem operations are synchronous (`readFileSync`, `writeFileSync`, `mkdirSync`)
@@ -96,6 +97,7 @@ import "https://…" / require("https://…")
 |---------|-------------|
 | `module.register()` (ESM only) | 18.19 / 20.6 |
 | `module.registerHooks()` (ESM + CJS) | 22.15 / 23.5 |
+| Remote TypeScript (`.ts`, `.tsx`, `.mts`, `.cts`) | 22.18 (type stripping enabled by default) |
 | CJS `require()` of HTTP URLs | 24+ |
 | Native `.ts` type-stripping (dev) | 22.6+ (with `--experimental-strip-types`) / 24+ (stable) |
 

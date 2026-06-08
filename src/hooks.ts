@@ -10,6 +10,7 @@
 
 import type { ResolveHookContext, ResolveFnOutput, LoadHookContext, LoadFnOutput, ResolveHookSync, LoadHookSync } from "node:module";
 import { pathToFileURL } from "node:url";
+import process from "node:process";
 import { fetchModuleSync } from "./sync-fetch.ts";
 import { isHttpUrl } from "./constants.ts";
 import { tmpEnabled, urlToTmpPath, writeTmpFile, tmpPathToUrl } from "./tmp.ts";
@@ -74,19 +75,36 @@ function getHttpParentUrl(parentURL: string | undefined): string | null {
   return extractHttpUrlFromParent(parentURL);
 }
 
+/**
+ * Whether the running Node version supports the "module-typescript" /
+ * "commonjs-typescript" load formats natively (without flags).
+ * Type stripping is enabled by default in Node 22.18+ and 23+/24+.
+ * @see https://nodejs.org/docs/latest-v22.x/api/cli.html#--no-experimental-strip-types
+ */
+const supportsTypeScriptFormat: boolean = (() => {
+  const [major, minor] = process.versions.node.split(".").map(Number) as [number, number];
+  return major > 22 || (major === 22 && minor >= 18);
+})();
+
 export function inferFormat(url: string, contentType: string): string {
   const ct = contentType.toLowerCase();
 
   if (ct.includes("application/json")) return "json";
   if (ct.includes("application/wasm")) return "wasm";
   if (ct.includes("text/typescript") || ct.includes("application/typescript"))
-    return "module";
+    return supportsTypeScriptFormat ? "module-typescript" : "module";
 
   const pathname = new URL(url).pathname;
   if (pathname.endsWith(".json")) return "json";
   if (pathname.endsWith(".wasm")) return "wasm";
+  if (pathname.endsWith(".cts"))
+    return supportsTypeScriptFormat ? "commonjs-typescript" : "commonjs";
   if (pathname.endsWith(".cjs")) return "commonjs";
+  if (pathname.endsWith(".mts"))
+    return supportsTypeScriptFormat ? "module-typescript" : "module";
   if (pathname.endsWith(".mjs")) return "module";
+  if (pathname.endsWith(".ts") || pathname.endsWith(".tsx"))
+    return supportsTypeScriptFormat ? "module-typescript" : "module";
 
   return "module";
 }

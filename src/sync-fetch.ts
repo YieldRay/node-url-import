@@ -32,7 +32,9 @@ function resolveWorkerPath(): string {
 
 function getWorker(): Worker {
   if (!worker) {
-    const w = new Worker(resolveWorkerPath());
+    // Use an empty execArgv so the worker doesn't inherit flags from the parent
+    // that are invalid for worker threads (e.g. --input-type, --tls-cipher-list).
+    const w = new Worker(resolveWorkerPath(), { execArgv: [] });
     w.unref(); // Don't keep the process alive
     w.on("error", () => {
       worker = null;

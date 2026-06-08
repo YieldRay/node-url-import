@@ -8,6 +8,11 @@ import { add } from "https://esm.sh/lodash-es";
 console.log(add(1, 2)); // 3
 ```
 
+```ts
+// Remote TypeScript works too (Node 22.18+)
+import { join } from "https://deno.land/std@0.224.0/path/mod.ts";
+```
+
 ```js
 // CJS require also works (Node 24+)
 const { default: ms } = require("https://esm.sh/ms@2.1.3");
@@ -110,7 +115,7 @@ await clearCache();
 3. Fetched sources are cached in Deno's remote module cache (`$DENO_DIR/remote/`, defaulting to `~/Library/Caches/deno/remote/` on macOS and `~/.cache/deno/remote/` on Linux), using the same file layout as Deno — so both runtimes share the same cache.
 4. For `require()` (synchronous), cache hits are served via `readFileSync`. On cache miss, a persistent worker thread fetches asynchronously while the main thread blocks via `Atomics.wait`.
 5. Cached modules are used forever until `--reload` is passed or `--clear-cache` is used (same as Deno).
-6. Module format is inferred from the `Content-Type` header and URL extension, defaulting to ESM.
+6. Module format is inferred from the `Content-Type` header and URL extension, defaulting to ESM. TypeScript files (`.ts`, `.tsx`, `.mts`, `.cts`) are loaded using Node's built-in type stripping on Node 22.18+.
 7. A Deno-style progress bar is shown on stderr during downloads (only on TTY).
 
 ## Node.js version compatibility
@@ -119,6 +124,7 @@ await clearCache();
 |---------|----------------|
 | ESM `import` (via `module.register`) | v18.19.0 / v20.6.0 |
 | ESM `import` (via `module.registerHooks`) | v22.15.0 / v23.5.0 |
+| Remote TypeScript (`.ts`, `.tsx`, `.mts`, `.cts`) | v22.18.0 |
 | CJS `require` of HTTP URLs | v24+ |
 
 ## Options
@@ -156,6 +162,14 @@ When `--lock` is passed, node-url-import writes a lock file recording the SHA-25
 On subsequent runs with `--lock`, fetched content is verified against the recorded hashes. Use `--frozen` to error on any mismatch instead of updating.
 
 ## TypeScript
+
+Remote TypeScript modules are supported on Node 22.18+ via Node's built-in type stripping. Files with `.ts`, `.tsx`, `.mts`, or `.cts` extensions (and URLs served with `text/typescript` or `application/typescript` content-type) are automatically loaded with the `module-typescript` format:
+
+```sh
+node-url-import https://deno.land/std@0.224.0/path/mod.ts
+```
+
+### Type declarations
 
 TypeScript does not resolve `https://` specifiers out of the box. Add an ambient module declaration to a `.d.ts` file included in your `tsconfig.json`:
 
