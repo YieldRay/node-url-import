@@ -122,12 +122,14 @@ if (isHttpUrl(target!)) {
   // We reuse the register-hooks file since it's guaranteed to exist.
   const entryPlaceholder = fileURLToPath(registerImportMetaUrl);
 
+  // No `--` separator: script args come after the entry positional, so Node
+  // already treats them as script args (even flag-like ones). Adding `--`
+  // would leak a stray `--` into the target's process.argv.
   nodeArgs = [
     "--import",
     registerImportMetaUrl,
     ...nodeFlags,
     entryPlaceholder,
-    "--",
     ...scriptArgs,
   ];
 } else {
@@ -136,7 +138,6 @@ if (isHttpUrl(target!)) {
     registerImportMetaUrl,
     ...nodeFlags,
     target!,
-    "--",
     ...scriptArgs,
   ];
 }
