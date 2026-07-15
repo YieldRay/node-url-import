@@ -86,25 +86,48 @@ const supportsTypeScriptFormat: boolean = (() => {
   return major > 22 || (major === 22 && minor >= 18);
 })();
 
-export function inferFormat(url: string, contentType: string): string {
+/**
+ * Resolve the load format for a TypeScript source. On Node versions without
+ * native type stripping (< 22.18), returning "module"/"commonjs" would hand
+ * raw TypeScript to the parser and fail with a cryptic syntax error, so we
+ * throw an explicit, actionable error instead.
+ */
+function typeScriptFormat(url: string, commonjs: boolean, tsSupported: boolean): string {
+  if (!tsSupported) {
+    throw new Error(
+      `Cannot load remote TypeScript module ${url}: this Node version ` +
+        `(${process.versions.node}) does not support type stripping. ` +
+        `Upgrade to Node 22.18+ or 24+ to import remote TypeScript.`,
+    );
+  }
+  return commonjs ? "commonjs-typescript" : "module-typescript";
+}
+
+/**
+ * `tsSupported` is injectable for testing; it defaults to the running Node
+ * version's native type-stripping support.
+ */
+export function inferFormat(
+  url: string,
+  contentType: string,
+  tsSupported: boolean = supportsTypeScriptFormat,
+): string {
   const ct = contentType.toLowerCase();
 
   if (ct.includes("application/json")) return "json";
   if (ct.includes("application/wasm")) return "wasm";
   if (ct.includes("text/typescript") || ct.includes("application/typescript"))
-    return supportsTypeScriptFormat ? "module-typescript" : "module";
+    return typeScriptFormat(url, false, tsSupported);
 
   const pathname = new URL(url).pathname;
   if (pathname.endsWith(".json")) return "json";
   if (pathname.endsWith(".wasm")) return "wasm";
-  if (pathname.endsWith(".cts"))
-    return supportsTypeScriptFormat ? "commonjs-typescript" : "commonjs";
+  if (pathname.endsWith(".cts")) return typeScriptFormat(url, true, tsSupported);
   if (pathname.endsWith(".cjs")) return "commonjs";
-  if (pathname.endsWith(".mts"))
-    return supportsTypeScriptFormat ? "module-typescript" : "module";
+  if (pathname.endsWith(".mts")) return typeScriptFormat(url, false, tsSupported);
   if (pathname.endsWith(".mjs")) return "module";
   if (pathname.endsWith(".ts") || pathname.endsWith(".tsx"))
-    return supportsTypeScriptFormat ? "module-typescript" : "module";
+    return typeScriptFormat(url, false, tsSupported);
 
   return "module";
 }
