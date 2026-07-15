@@ -35,11 +35,12 @@
     "cli": "node src/cli.ts",
     "node:import": "node --import ./src/register-hooks.ts",
     "test": "node --import ./src/register-hooks.ts --test src/*.test.ts",
+    "cov": "node --import ./src/register-hooks.ts --test --experimental-test-coverage --test-coverage-exclude='src/*.test.ts' src/*.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --declaration"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^26.1.1",
     "typescript": "^6.0.3"
   },
   "repository": {
