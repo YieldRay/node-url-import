@@ -43,48 +43,54 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
   downloadAdd();
   downloadBegin(url);
 
-  let currentUrl = url;
-  const redirectChain: string[] = [url];
+  // Always mark this download slot as finished, even on error, so the progress
+  // bar's done/total counters stay balanced and downloadEnd() can fire. Without
+  // this, a failed fetch leaves an orphaned slot that prevents the bar from ever
+  // clearing (and leaves a stale line on the terminal).
+  try {
+    let currentUrl = url;
+    const redirectChain: string[] = [url];
 
-  for (let i = 0; i < MAX_REDIRECTS; i++) {
-    const res = await fetch(currentUrl, {
-      headers: { "User-Agent": NAME },
-      redirect: "manual",
-    });
+    for (let i = 0; i < MAX_REDIRECTS; i++) {
+      const res = await fetch(currentUrl, {
+        headers: { "User-Agent": NAME },
+        redirect: "manual",
+      });
 
-    if (res.status >= 300 && res.status < 400) {
-      // Drain the response body to free the connection
-      await res.body?.cancel();
-      const location = res.headers.get("location");
-      if (!location) {
-        throw new Error(`Redirect from ${currentUrl} had no Location header`);
+      if (res.status >= 300 && res.status < 400) {
+        // Drain the response body to free the connection
+        await res.body?.cancel();
+        const location = res.headers.get("location");
+        if (!location) {
+          throw new Error(`Redirect from ${currentUrl} had no Location header`);
+        }
+        currentUrl = new URL(location, currentUrl).href;
+        redirectChain.push(currentUrl);
+        continue;
       }
-      currentUrl = new URL(location, currentUrl).href;
-      redirectChain.push(currentUrl);
-      continue;
+
+      if (!res.ok) {
+        throw new Error(
+          `Failed to fetch ${currentUrl}: ${res.status} ${res.statusText}`,
+        );
+      }
+
+      const source: string = await res.text();
+      const contentType: string =
+        res.headers.get("content-type") || "application/javascript";
+
+      writeCache(redirectChain, source, contentType);
+
+      if (isLockEnabled()) {
+        recordRedirect(url, currentUrl);
+        verifyLock(currentUrl, source);
+      }
+
+      return { source, contentType, url, finalUrl: currentUrl };
     }
 
-    if (!res.ok) {
-      throw new Error(
-        `Failed to fetch ${currentUrl}: ${res.status} ${res.statusText}`,
-      );
-    }
-
-    const source: string = await res.text();
-    const contentType: string =
-      res.headers.get("content-type") || "application/javascript";
-
-    writeCache(redirectChain, source, contentType);
-
-    if (isLockEnabled()) {
-      recordRedirect(url, currentUrl);
-      verifyLock(currentUrl, source);
-    }
-
+    throw new Error(`Too many redirects fetching ${url}`);
+  } finally {
     downloadDone();
-
-    return { source, contentType, url, finalUrl: currentUrl };
   }
-
-  throw new Error(`Too many redirects fetching ${url}`);
 }

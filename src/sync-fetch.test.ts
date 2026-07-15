@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { fetchModuleSync } from "./sync-fetch.ts";
+import { cachePaths } from "./cache.ts";
 
 describe("fetchModuleSync", () => {
   it("should fetch a module synchronously from esm.sh", () => {
@@ -15,11 +17,24 @@ describe("fetchModuleSync", () => {
     assert.ok(result.finalUrl.startsWith("https://"));
   });
 
-  it("should return cached result on second call", () => {
-    // First call populates cache
-    const first = fetchModuleSync("https://esm.sh/ms@2.1.3");
-    // Second call should hit disk cache (much faster)
-    const second = fetchModuleSync("https://esm.sh/ms@2.1.3");
+  it("should write a cache entry to disk after fetching", () => {
+    const url = "https://esm.sh/ms@2.1.3";
+    const first = fetchModuleSync(url);
+
+    // The requested URL must have a cache entry on disk after fetching
+    // (either a source entry or a redirect stub pointing at the resolved URL).
+    assert.ok(
+      existsSync(cachePaths(url).file),
+      "expected a cache entry for the requested URL after fetching",
+    );
+    // The final (post-redirect) URL must have its own source entry cached.
+    assert.ok(
+      existsSync(cachePaths(first.finalUrl).file),
+      "expected a cache entry for the final URL after fetching",
+    );
+
+    // A second call returns the same content from that cache.
+    const second = fetchModuleSync(url);
     assert.equal(first.source, second.source);
     assert.equal(first.finalUrl, second.finalUrl);
   });
