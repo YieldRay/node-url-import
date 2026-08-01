@@ -7,10 +7,11 @@ on:
         description: Package version in x.y.z format
         required: true
         type: string
-      npm_token:
-        description: npm token used for publish
-        required: true
-        type: string
+      provenance:
+        description: Include npm provenance attestation
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -22,12 +23,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: lts/*
           registry-url: https://registry.npmjs.org
@@ -72,8 +73,13 @@ jobs:
 
       - name: Publish to npm
         env:
-          NPM_TOKEN: ${{ inputs.npm_token }}
-        run: npm publish --access public --provenance
+          PROVENANCE: ${{ inputs.provenance }}
+        run: |
+          if [[ "$PROVENANCE" == "true" ]]; then
+            npm publish --access public --provenance
+          else
+            npm publish --access public
+          fi
 
       - name: Create and push tag
         env:
