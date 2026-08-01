@@ -137,6 +137,21 @@ await clearCache();
 6. Module format is inferred from the `Content-Type` header and URL extension, defaulting to ESM. TypeScript files (`.ts`, `.tsx`, `.mts`, `.cts`) are loaded using Node's built-in type stripping on Node 22.18+.
 7. A Deno-style progress bar is shown on stderr during downloads (only on TTY).
 
+## Known limitations
+
+### `createRequire(import.meta.url)` in remote modules
+
+A remote module's `import.meta.url` is set to its HTTP URL. Node's `module.createRequire()` only accepts a `file:` URL or an absolute path, so a remote ESM bundle that calls `createRequire(import.meta.url)` at load time fails with:
+
+```
+TypeError [ERR_INVALID_ARG_VALUE]: The argument 'filename' must be a file URL object,
+file URL string, or absolute path string. Received 'https://example.com/bundle.js'
+```
+
+This affects some bundler outputs (e.g. esbuild ESM bundles of packages like `ws`) even when the resulting `require` is only used for Node built-ins. Deno avoids this by polyfilling `createRequire` to accept remote URLs; this tool relies on Node's native, file-only implementation.
+
+**Workarounds:** use `--cdn` (or import directly) from a CDN that ships a build which doesn't call `createRequire(import.meta.url)`, or use the package's `node_modules` build.
+
 ## Node.js version compatibility
 
 | Feature | Minimum Node.js |

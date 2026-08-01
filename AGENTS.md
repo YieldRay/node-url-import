@@ -97,6 +97,12 @@ import "https://…" / require("https://…")
 - The CLI spawns a child `node` process rather than running inline
 - Own flags (`--reload`, `--lock`, etc.) are translated to environment variables so the loader thread picks them up
 
+### Known limitation: `createRequire(import.meta.url)` in remote modules
+- We set a remote module's `import.meta.url` to its HTTP URL, but Node's `module.createRequire()` only accepts `file:` URLs / absolute paths and throws `ERR_INVALID_ARG_VALUE` on an `https:` URL
+- So remote ESM bundles (e.g. esbuild output) that call `createRequire(import.meta.url)` at load time fail — even when they only use the resulting `require` for node built-ins
+- Deno works because it polyfills `createRequire` to accept remote URLs; we rely on Node's native (file-only) implementation
+- Workaround: import the module via `--cdn` off a CDN that ships a `file:`-friendly build, or use a build that doesn't call `createRequire(import.meta.url)`
+
 ## Node Version Compatibility
 
 | Feature | Minimum Node |

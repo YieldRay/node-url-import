@@ -91,7 +91,7 @@ export function fetchModuleSync(url: string): CacheEntry {
 
   const response = msg.message as WorkerResponse;
   if (response.error) {
-    throw new Error(response.error);
+    throw new Error(`Error fetching ${url}: ${response.error}`);
   }
 
   return {
