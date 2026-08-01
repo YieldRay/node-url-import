@@ -55,4 +55,27 @@ describe("node built-in from remote module", () => {
       "https://esm.sh/v135/some-package@1.0.0/es2022/util.js",
     );
   });
+
+  it("should strip HTTP parentURL when forwarding bare specifiers to nextResolve", async () => {
+    const { resolve } = await import("./hooks.ts");
+
+    // Regression: a bare npm package (not a node built-in) imported from an
+    // HTTP module used to reach Node's default resolver with the HTTP
+    // parentURL still in context, throwing `ERR_INVALID_URL`. The parentURL
+    // must be dropped so Node resolves it from the local project.
+    let seenParentURL: string | undefined = "unset";
+    const nextResolve = (spec: string, ctx?: Partial<ResolveHookContext>) => {
+      seenParentURL = ctx?.parentURL;
+      return { url: `file:///node_modules/${spec}/index.js`, shortCircuit: true as const };
+    };
+
+    const ctx: ResolveHookContext = {
+      ...defaultResolveContext,
+      parentURL: "https://raw.githubusercontent.com/user/repo/main/api/ws.ts",
+    };
+
+    const result = resolve("ws", ctx, nextResolve);
+    assert.equal(seenParentURL, undefined, "HTTP parentURL should be stripped");
+    assert.ok(!result.url.startsWith("https://"));
+  });
 });

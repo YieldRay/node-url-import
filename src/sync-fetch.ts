@@ -75,7 +75,7 @@ export function fetchModuleSync(url: string): CacheEntry {
 
   w.postMessage({ url, sab, port: port2 }, [port2]);
 
-  // Block until the worker signals completion (actually no timeout — matches Deno behavior)
+  // Block until the worker signals completion (no timeout, matching Deno).
   if (Atomics.wait(signal, 0, 0) === "timed-out") {
     port1.close();
     throw new Error(`Timed out fetching ${url}`);

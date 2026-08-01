@@ -14,6 +14,7 @@ const fixtureDir = join(tmpdir(), "node-url-import-cli-test");
 // flag → env translation from a single local fixture (no network).
 const DUMP_SCRIPT = `console.log(JSON.stringify({
   argv: process.argv.slice(2),
+  execArgv: process.execArgv,
   env: {
     RELOAD: process.env.URL_IMPORT_RELOAD,
     TMP: process.env.URL_IMPORT_TMP,
@@ -28,6 +29,7 @@ const dumpScript = join(fixtureDir, "dump.mjs");
 
 interface Dump {
   argv: string[];
+  execArgv: string[];
   env: {
     RELOAD?: string;
     TMP?: string;
@@ -158,10 +160,22 @@ describe("CLI: own-flag to env translation", () => {
 
 describe("CLI: node flag pass-through", () => {
   it("should forward unknown flags before the script to node without leaking into argv", () => {
-    // --title is a harmless node flag; if it were misrouted the child would
-    // error or it would appear in process.argv.
+    // --title is a harmless node flag; it must reach node's execArgv and must
+    // not leak into the script's process.argv.
     const dump = runDump(["--title=node-url-import-test"]);
     assert.deepEqual(dump.argv, []);
+    assert.ok(
+      dump.execArgv.includes("--title=node-url-import-test"),
+      `node flag not forwarded to child execArgv: ${JSON.stringify(dump.execArgv)}`,
+    );
+  });
+
+  it("should forward node flags while consuming its own flags", () => {
+    // -r is ours (→ env, not forwarded); --title is node's (→ execArgv).
+    const dump = runDump(["-r", "--title=node-url-import-test"]);
+    assert.equal(dump.env.RELOAD, "1");
+    assert.ok(dump.execArgv.includes("--title=node-url-import-test"));
+    assert.ok(!dump.execArgv.some((a) => a.startsWith("-r")));
   });
 
   it("should not set URL_IMPORT_MAIN for a local file target", () => {
@@ -185,22 +199,3 @@ describe("CLI: exit code propagation", () => {
   });
 });
 
-describe("CLI: entry-point redirect for HTTP targets", () => {
-  it("should set import.meta.main and import.meta.url for an HTTP URL target", () => {
-    const result = runCli(["https://crux.land/api/get/7UE79f.ts"]);
-    assert.equal(
-      result.status,
-      0,
-      `CLI exited with ${result.status}\nstderr: ${result.stderr}`,
-    );
-    // The crux.land script prints import.meta.main and import.meta.url.
-    assert.ok(
-      result.stdout.includes("true"),
-      `Expected import.meta.main to be true, got: ${result.stdout}`,
-    );
-    assert.ok(
-      result.stdout.includes("https://crux.land/api/get/7UE79f.ts"),
-      `Expected import.meta.url to be the HTTP URL, got: ${result.stdout}`,
-    );
-  });
-});

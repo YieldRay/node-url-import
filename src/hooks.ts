@@ -234,6 +234,14 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
       }
     }
 
+    // Bare specifier (npm package or node built-in) imported from an HTTP
+    // module. Node's default resolver would try to compute a package scope
+    // relative to the HTTP parentURL and throw `ERR_INVALID_URL`, so drop the
+    // HTTP parent and let Node resolve it from the local project (Deno-like).
+    if (context.parentURL && getHttpParentUrl(context.parentURL)) {
+      return nextResolve(specifier, { ...context, parentURL: undefined });
+    }
+
     return nextResolve(specifier, context);
   };
 }

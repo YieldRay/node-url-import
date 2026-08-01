@@ -59,17 +59,11 @@ function extForContentType(contentType: string): string {
 }
 
 /**
- * Convert an HTTP(S) URL to a local tmp file path.
+ * Convert an HTTP(S) URL to a local tmp file path. Extensionless URLs get an
+ * `index.<ext>` suffix (see file header for why).
  *
- * If the URL pathname has no recognised file extension, an `index.<ext>`
- * suffix is appended based on the content type so the path can coexist
- * as a directory with child modules.
- *
- * https://esm.sh/v135/pkg@1.0.0/script.js
- * → <TMP_ROOT>/https/esm.sh/v135/pkg@1.0.0/script.js
- *
- * https://esm.sh/ms@2.1.3  (content-type: application/javascript)
- * → <TMP_ROOT>/https/esm.sh/ms@2.1.3/index.mjs
+ *   https://esm.sh/v135/pkg@1.0.0/script.js → <TMP_ROOT>/https/esm.sh/v135/pkg@1.0.0/script.js
+ *   https://esm.sh/ms@2.1.3 (js)            → <TMP_ROOT>/https/esm.sh/ms@2.1.3/index.mjs
  */
 export function urlToTmpPath(url: string, contentType?: string): string {
   const parsed = new URL(url);
@@ -88,18 +82,10 @@ export function urlToTmpPath(url: string, contentType?: string): string {
 
 /**
  * Reverse-map a file:// URL (or local path) under the tmp root back to its
- * original HTTP(S) URL. Returns null if the path is not under TMP_ROOT.
+ * original HTTP(S) URL, or null if not under TMP_ROOT. Any `index.<ext>` added
+ * by urlToTmpPath is kept (see file header — the resolve base is unaffected).
  *
- * No stripping is done — the returned URL includes `/index.mjs` if one
- * was added by urlToTmpPath. This is correct because tmpPathToUrl is only
- * used to resolve relative imports, and the base directory is the same
- * whether the URL ends in `/index.mjs` or `/`.
- *
- * file:///tmp/node-url-import/https/esm.sh/v135/pkg@1.0.0/script.js
- * → https://esm.sh/v135/pkg@1.0.0/script.js
- *
- * file:///tmp/node-url-import/https/esm.sh/ms@2.1.3/index.mjs
- * → https://esm.sh/ms@2.1.3/index.mjs
+ *   file:///tmp/node-url-import/https/esm.sh/v135/pkg@1.0.0/script.js → https://esm.sh/v135/pkg@1.0.0/script.js
  */
 export function tmpPathToUrl(fileUrl: string): string | null {
   let filePath: string;

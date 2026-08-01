@@ -3,14 +3,7 @@ import { readCache, writeCache } from "./cache.ts";
 import type { CacheEntry } from "./cache.ts";
 import { NAME, MAX_REDIRECTS } from "./constants.ts";
 import { verifyLock, recordRedirect, isLockEnabled } from "./lock.ts";
-import {
-  downloadStart,
-  downloadAdd,
-  downloadBegin,
-  downloadDone,
-} from "./progress.ts";
-
-let sessionStarted = false;
+import { downloadAdd, downloadBegin, downloadDone } from "./progress.ts";
 
 const reload: boolean = process.env.URL_IMPORT_RELOAD === "1";
 
@@ -35,18 +28,11 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
     return cached;
   }
 
-  if (!sessionStarted) {
-    sessionStarted = true;
-    downloadStart();
-  }
-
   downloadAdd();
   downloadBegin(url);
 
-  // Always mark this download slot as finished, even on error, so the progress
-  // bar's done/total counters stay balanced and downloadEnd() can fire. Without
-  // this, a failed fetch leaves an orphaned slot that prevents the bar from ever
-  // clearing (and leaves a stale line on the terminal).
+  // Mark the slot done even on error, so counters stay balanced and the
+  // progress bar can clear (a failed fetch must not orphan a slot).
   try {
     let currentUrl = url;
     const redirectChain: string[] = [url];

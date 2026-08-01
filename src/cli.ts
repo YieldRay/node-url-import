@@ -18,17 +18,28 @@ import { clearCache } from "./cache.ts";
 
 const allArgs = process.argv.slice(2);
 
+const ownOptions = {
+  help: { type: "boolean", default: false },
+  "clear-cache": { type: "boolean", default: false },
+  tmp: { type: "boolean", default: false },
+  reload: { type: "boolean", short: "r", default: false },
+  lock: { type: "boolean", default: false },
+  "lock-file": { type: "string" },
+  frozen: { type: "boolean", default: false },
+} as const;
+
+// The set of names/aliases that belong to us. Under strict:false, parseArgs
+// also puts unknown (node) flags into `values`, so we can't use `values` to
+// tell ours apart — we match token names against this set instead.
+const ownFlagNames = new Set<string>();
+for (const [name, opt] of Object.entries(ownOptions)) {
+  ownFlagNames.add(name);
+  if ("short" in opt && opt.short) ownFlagNames.add(opt.short);
+}
+
 const { values, tokens } = parseArgs({
   args: allArgs,
-  options: {
-    help: { type: "boolean", default: false },
-    "clear-cache": { type: "boolean", default: false },
-    tmp: { type: "boolean", default: false },
-    reload: { type: "boolean", short: "r", default: false },
-    lock: { type: "boolean", default: false },
-    "lock-file": { type: "string" },
-    frozen: { type: "boolean", default: false },
-  },
+  options: ownOptions,
   strict: false,
   allowPositionals: true,
   tokens: true,
@@ -49,7 +60,7 @@ if (targetIdx !== undefined) {
   // Node flags = unknown option tokens whose index < targetIdx
   // We reconstruct them from the raw argv to preserve --flag=value forms.
   for (const t of tokens!) {
-    if (t.kind === "option" && t.index < targetIdx && !(t.name in values)) {
+    if (t.kind === "option" && t.index < targetIdx && !ownFlagNames.has(t.name)) {
       // Unknown option — pass through to node
       const raw = allArgs[t.index]!;
       nodeFlags.push(raw);

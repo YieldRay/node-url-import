@@ -158,16 +158,21 @@ function stopTimer(): void {
 
 // ── Public API ──────────────────────────────────────────────────
 
-export function downloadStart(total = 0): void {
-  state.total = total;
-  state.done = 0;
-  state.tick = 0;
-  state.startTime = Date.now();
-  state.active = false;
-  startTimer();
-}
-
+/**
+ * Register a queued download. Starts a fresh session (resetting counters and
+ * the elapsed clock) if none is currently in flight — so a later batch of
+ * downloads doesn't inherit stale done/total values from a completed one.
+ */
 export function downloadAdd(): void {
+  if (state.done >= state.total) {
+    // No session in flight — begin a new one.
+    state.total = 0;
+    state.done = 0;
+    state.tick = 0;
+    state.startTime = Date.now();
+    state.active = false;
+    startTimer();
+  }
   state.total++;
 }
 
