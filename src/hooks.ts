@@ -9,6 +9,7 @@
  */
 
 import type { ResolveHookContext, ResolveFnOutput, LoadHookContext, LoadFnOutput, ResolveHookSync, LoadHookSync } from "node:module";
+import { isBuiltin } from "node:module";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
 import { fetchModuleSync } from "./sync-fetch.ts";
@@ -149,6 +150,34 @@ type LoadHookAsync = (...args: Parameters<LoadHookSync>) => Promise<LoadFnOutput
 const mainUrl: string | undefined = process.env.URL_IMPORT_MAIN;
 
 /**
+ * When set (via --cdn / URL_IMPORT_CDN), bare specifiers that aren't Node
+ * built-ins are resolved against this base URL, e.g. `ws` → `https://esm.sh/ws`.
+ * Always ends with a trailing slash. Set by the CLI.
+ */
+const cdnBase: string | undefined = process.env.URL_IMPORT_CDN;
+
+/** Matches a leading URL scheme like `file:`, `http:`, `node:`, `data:`. */
+const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+
+/** A relative or absolute-path specifier (`./`, `../`, or `/`). */
+function isRelativeSpecifier(specifier: string): boolean {
+  return (
+    specifier.startsWith("./") ||
+    specifier.startsWith("../") ||
+    specifier.startsWith("/")
+  );
+}
+
+/**
+ * A bare specifier is a package name (e.g. `ws`, `@scope/pkg/sub`) — not
+ * relative (`.`/`..`/`/`) and carrying no URL scheme (excludes `file:`,
+ * `http:`, `node:`, `npm:`, etc.). These are the ones a CDN can map.
+ */
+function isBareSpecifier(specifier: string): boolean {
+  return !isRelativeSpecifier(specifier) && !SCHEME_RE.test(specifier);
+}
+
+/**
  * Create a resolve hook parameterized by the fetch function.
  * Sync fetchFn produces ResolveHookSync, async produces ResolveHookAsync.
  */
@@ -172,10 +201,8 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
       return nextResolve(stripNpmSpecifier(specifier), context);
     }
 
-    // Direct HTTP(S) URL
-    if (isHttpUrl(specifier)) {
-      const result = fetchFn(specifier);
-
+    // Fetch an HTTP(S) URL and turn it into a resolve result (respecting --tmp).
+    const resolveHttp = (url: string): ResolveFnOutput | Promise<ResolveFnOutput> => {
       const handleFetched = (entry: CacheEntry): ResolveFnOutput => {
         if (tmpEnabled) {
           const tmpPath = urlToTmpPath(entry.finalUrl, entry.contentType);
@@ -185,21 +212,23 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
         }
         return { shortCircuit: true, url: entry.finalUrl };
       };
+      const result = fetchFn(url);
+      return result instanceof Promise ? result.then(handleFetched) : handleFetched(result);
+    };
 
-      if (result instanceof Promise) {
-        return result.then(handleFetched);
-      }
-      return handleFetched(result);
+    // Direct HTTP(S) URL
+    if (isHttpUrl(specifier)) {
+      return resolveHttp(specifier);
+    }
+
+    // CDN mode: map a bare package specifier to the CDN, e.g. `ws` →
+    // `https://esm.sh/ws`. Node built-ins (fs, http, ...) are left untouched.
+    if (cdnBase && isBareSpecifier(specifier) && !isBuiltin(specifier)) {
+      return resolveHttp(cdnBase + specifier);
     }
 
     // --tmp mode: relative import inside a module under the tmp dir
-    if (
-      tmpEnabled &&
-      context.parentURL &&
-      (specifier.startsWith("./") ||
-        specifier.startsWith("../") ||
-        specifier.startsWith("/"))
-    ) {
+    if (tmpEnabled && context.parentURL && isRelativeSpecifier(specifier)) {
       const parentHttpUrl = tmpPathToUrl(context.parentURL);
       if (parentHttpUrl) {
         const resolved = new URL(specifier, parentHttpUrl).href;
@@ -221,12 +250,7 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
 
     // Relative or absolute-path import inside an HTTP-loaded module.
     // Also handles the case where Node mangles HTTP URLs into file paths for CJS require.
-    if (
-      context.parentURL &&
-      (specifier.startsWith("./") ||
-        specifier.startsWith("../") ||
-        specifier.startsWith("/"))
-    ) {
+    if (context.parentURL && isRelativeSpecifier(specifier)) {
       const httpParent = getHttpParentUrl(context.parentURL);
       if (httpParent) {
         const resolved = new URL(specifier, httpParent).href;

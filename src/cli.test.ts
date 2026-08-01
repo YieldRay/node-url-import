@@ -21,6 +21,7 @@ const DUMP_SCRIPT = `console.log(JSON.stringify({
     LOCK: process.env.URL_IMPORT_LOCK,
     FROZEN: process.env.URL_IMPORT_FROZEN,
     MAIN: process.env.URL_IMPORT_MAIN,
+    CDN: process.env.URL_IMPORT_CDN,
   },
 }));
 `;
@@ -36,6 +37,7 @@ interface Dump {
     LOCK?: string;
     FROZEN?: string;
     MAIN?: string;
+    CDN?: string;
   };
 }
 
@@ -156,6 +158,26 @@ describe("CLI: own-flag to env translation", () => {
     assert.equal(env.RELOAD, "1");
     assert.equal(env.TMP, "1");
   });
+
+  it("should not set URL_IMPORT_CDN without --cdn", () => {
+    assert.equal(runDump([]).env.CDN, undefined);
+  });
+
+  it("should translate bare --cdn to the default CDN base", () => {
+    assert.equal(runDump(["--cdn"]).env.CDN, "https://esm.sh/");
+  });
+
+  it("should translate --cdn=<url> to that base, adding a trailing slash", () => {
+    assert.equal(runDump(["--cdn=https://cdn.example.com"]).env.CDN, "https://cdn.example.com/");
+    assert.equal(runDump(["--cdn=https://esm.sh/"]).env.CDN, "https://esm.sh/");
+  });
+
+  it("should not swallow the target when --cdn has no value", () => {
+    // A bare --cdn must not consume the following positional as its value.
+    const dump = runDump(["--cdn"]);
+    assert.equal(dump.env.CDN, "https://esm.sh/");
+    assert.deepEqual(dump.argv, []);
+  });
 });
 
 describe("CLI: node flag pass-through", () => {
@@ -180,6 +202,37 @@ describe("CLI: node flag pass-through", () => {
 
   it("should not set URL_IMPORT_MAIN for a local file target", () => {
     assert.equal(runDump([]).env.MAIN, undefined);
+  });
+});
+
+describe("CLI: --cdn bare-specifier resolution", () => {
+  it("should resolve a bare specifier via the CDN and keep node built-ins local", () => {
+    const scriptPath = join(fixtureDir, "cdn-bare.mjs");
+    writeFileSync(
+      scriptPath,
+      // `ms` is a bare npm package (→ CDN); `node:path` is a built-in (→ local).
+      `import ms from "ms";\n` +
+        `import { join } from "node:path";\n` +
+        `console.log(JSON.stringify({ ms: ms(1000), join: typeof join }));\n`,
+      "utf-8",
+    );
+
+    const result = runCli(["--cdn", scriptPath]);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    const out = JSON.parse(result.stdout.trim());
+    assert.equal(out.ms, "1s");
+    assert.equal(out.join, "function");
+  });
+
+  it("should fail to resolve a bare specifier without --cdn", () => {
+    const scriptPath = join(fixtureDir, "no-cdn-bare.mjs");
+    writeFileSync(scriptPath, `import "ms";\n`, "utf-8");
+    const result = runCli([scriptPath]);
+    assert.notEqual(result.status, 0);
+    assert.ok(
+      /ERR_MODULE_NOT_FOUND|Cannot find package/.test(result.stderr),
+      `Expected module-not-found, got: ${result.stderr}`,
+    );
   });
 });
 

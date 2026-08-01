@@ -31,6 +31,9 @@
   "bin": {
     "node-url-import": "./dist/cli.js"
   },
+  "engines": {
+    "node": ">=18.19.0"
+  },
   "scripts": {
     "cli": "node src/cli.ts",
     "node:import": "node --import ./src/register-hooks.ts",

@@ -54,6 +54,12 @@ node-url-import --inspect ./app.mjs
 # Forward flags to the remote script
 node-url-import https://raw.esm.sh/nrm-lite/cli.mjs -h
 
+# Resolve bare specifiers via a CDN (e.g. `import "zod"` → https://esm.sh/zod)
+node-url-import --cdn ./app.mjs
+
+# Use a custom CDN base
+node-url-import --cdn=https://cdn.jsdelivr.net/npm/ ./app.mjs
+
 # Write a lock file (Deno-compatible format)
 node-url-import --lock ./app.mjs
 
@@ -94,6 +100,19 @@ import ms from "npm:ms@2.1.3"; // version stripped → "ms"
 import add from "npm:lodash-es@4/add"; // → "lodash-es/add"
 import node from "npm:@types/node@22"; // → "@types/node"
 ```
+
+### CDN bare specifiers
+
+With `--cdn`, bare specifiers (package names) are resolved against a CDN base URL instead of `node_modules`, so remote code can import npm packages without a local install:
+
+```js
+import { z } from "zod"; // → https://esm.sh/zod
+```
+
+- `--cdn` uses the default base `https://esm.sh/`.
+- `--cdn=<url>` uses a custom base (a trailing `/` is added if missing), e.g. `--cdn=https://cdn.jsdelivr.net/npm/`.
+- Node built-ins (`node:fs`, `http`, `crypto`, …), relative imports (`./x`), and full URLs are left untouched.
+- `npm:` specifiers still resolve from `node_modules`, regardless of `--cdn`.
 
 ### Programmatic API
 

@@ -47,7 +47,7 @@ import "https://…" / require("https://…")
 
 | File | Role |
 |---|---|
-| `src/hooks.ts` | Synchronous `resolve` + `load` hooks (for `module.registerHooks()`); `npm:` specifier stripping; format inference (including TypeScript → `module-typescript`); handles CJS parentURL mangling for transitive imports |
+| `src/hooks.ts` | Synchronous `resolve` + `load` hooks (for `module.registerHooks()`); `npm:` specifier stripping; `--cdn` bare-specifier mapping (skips node built-ins via `isBuiltin`); format inference (including TypeScript → `module-typescript`); handles CJS parentURL mangling for transitive imports |
 | `src/loader.ts` | Async `resolve` + `load` hooks (for `module.register()`); thin wrapper delegating to hooks.ts |
 | `src/register-hooks.ts` | Entry point: calls `module.registerHooks()` on Node 22.15+, falls back to `module.register()` on 18.19+/20.6+ |
 | `src/sync-fetch.ts` | Checks disk cache with `readFileSync`, on miss blocks via `Atomics.wait` while worker fetches |
@@ -121,3 +121,5 @@ fnm use 24 && node --import ./src/register-hooks.ts -e "require('https://esm.sh/
 `URL_IMPORT_RELOAD`, `URL_IMPORT_LOCK`, `URL_IMPORT_TMP` — the CLI translates its own flags into these so the loader thread picks them up. Don't read CLI flags directly in hook code.
 
 `URL_IMPORT_MAIN` — set by the CLI when the target is an HTTP URL. The resolve hook reads this at module load time and redirects the entry-point resolution to the HTTP URL.
+
+`URL_IMPORT_CDN` — set by the CLI from `--cdn[=<url>]` (defaults to `https://esm.sh/`). When set, the resolve hook maps bare specifiers to `<cdn><specifier>` (e.g. `ws` → `https://esm.sh/ws`), skipping node built-ins (`isBuiltin`), relative specifiers, and anything carrying a URL scheme.

@@ -18,6 +18,8 @@ import { clearCache } from "./cache.ts";
 
 const allArgs = process.argv.slice(2);
 
+const DEFAULT_CDN = "https://esm.sh/";
+
 const ownOptions = {
   help: { type: "boolean", default: false },
   "clear-cache": { type: "boolean", default: false },
@@ -26,6 +28,9 @@ const ownOptions = {
   lock: { type: "boolean", default: false },
   "lock-file": { type: "string" },
   frozen: { type: "boolean", default: false },
+  // Declared boolean so a bare `--cdn` doesn't swallow the target positional.
+  // `--cdn` → true (use default CDN); `--cdn=<url>` → that URL (see cdnBase below).
+  cdn: { type: "boolean", default: false },
 } as const;
 
 // The set of names/aliases that belong to us. Under strict:false, parseArgs
@@ -44,6 +49,17 @@ const { values, tokens } = parseArgs({
   allowPositionals: true,
   tokens: true,
 });
+
+// Resolve the CDN base URL for bare-specifier mapping:
+//   (absent)        → undefined (feature off)
+//   --cdn           → DEFAULT_CDN
+//   --cdn=<url>     → <url> (a trailing slash is added if missing)
+function resolveCdnBase(value: string | boolean | undefined): string | undefined {
+  if (value === undefined || value === false) return undefined;
+  const base = value === true ? DEFAULT_CDN : value;
+  return base.endsWith("/") ? base : base + "/";
+}
+const cdnBase = resolveCdnBase(values.cdn as string | boolean | undefined);
 
 // Find the first positional token — that's the target script/URL.
 // Everything before it that's an unknown option token is a node flag.
@@ -105,6 +121,8 @@ ${b("Options:")}
   ${y("--frozen")}                 Error if lock file is out of date ${dim("(use with --lock)")}
   ${y("--tmp")}                    Write fetched modules to a tmp dir with readable paths
                           ${dim("(modules see themselves as local files under /tmp/node-url-import/)")}
+  ${y("--cdn")}${dim("[=<url>]")}            Resolve bare specifiers via a CDN ${dim(`(e.g. ws → ${DEFAULT_CDN}ws)`)}
+                          ${dim(`(default: ${DEFAULT_CDN}; node built-ins stay local)`)}
 
 ${b("Environment:")}
   ${y("DENO_DIR")}                 Deno cache root ${dim("(default: ~/Library/Caches/deno on macOS, ~/.cache/deno on Linux)")}
@@ -112,6 +130,7 @@ ${b("Environment:")}
   ${y("URL_IMPORT_RELOAD=1")}      Same as --reload
   ${y("URL_IMPORT_LOCK")}${dim("=path")}     Same as --lock <file>
   ${y("URL_IMPORT_FROZEN=1")}      Same as --frozen
+  ${y("URL_IMPORT_CDN")}${dim("=<url>")}     Same as --cdn=<url>
 `);
   process.exit(0);
 }
@@ -175,6 +194,9 @@ if (values.frozen) {
   if (!env.URL_IMPORT_LOCK) {
     env.URL_IMPORT_LOCK = resolve("deno.lock");
   }
+}
+if (cdnBase) {
+  env.URL_IMPORT_CDN = cdnBase;
 }
 
 const result = spawnSync(process.execPath, nodeArgs, {
