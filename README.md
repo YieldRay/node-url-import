@@ -114,6 +114,15 @@ import { z } from "zod"; // → https://esm.sh/zod
 - Node built-ins (`node:fs`, `http`, `crypto`, …), relative imports (`./x`), and full URLs are left untouched.
 - `npm:` specifiers still resolve from `node_modules`, regardless of `--cdn`.
 
+### jsr: specifiers
+
+When `--cdn` is specified or set to `https://esm.sh/` (the default), Deno-style `jsr:` specifiers are mapped to esm.sh.
+
+```js
+import { encodeBase64 } from "jsr:@std/encoding@1.0.0/base64"; // → https://esm.sh/jsr/@std/encoding@1.0.0/base64
+import { Hono } from "jsr:@hono/hono@4"; // → https://esm.sh/jsr/@hono/hono@4
+```
+
 ### Programmatic API
 
 ```js
@@ -189,9 +198,6 @@ When `--lock` is passed, node-url-import writes a lock file recording the SHA-25
   }
 }
 ```
-
-- `redirects`: maps original URLs to their final redirected URLs
-- `remote`: maps final URLs to SHA-256 hashes of the source
 
 On subsequent runs with `--lock`, fetched content is verified against the recorded hashes. Use `--frozen` to error on any mismatch instead of updating.
 

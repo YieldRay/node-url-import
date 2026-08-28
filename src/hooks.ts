@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import process from "node:process";
 import { fetchModuleSync } from "./sync-fetch.ts";
 import { isHttpUrl } from "./constants.ts";
+import { isEsmShCdn, jsrToCdnUrl } from "./jsr.ts";
 import { tmpEnabled, urlToTmpPath, writeTmpFile, tmpPathToUrl } from "./tmp.ts";
 import type { CacheEntry } from "./cache.ts";
 
@@ -215,6 +216,17 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
       const result = fetchFn(url);
       return result instanceof Promise ? result.then(handleFetched) : handleFetched(result);
     };
+
+    // jsr: specifier — only when --cdn points at esm.sh (the default CDN).
+    if (specifier.startsWith("jsr:")) {
+      if (cdnBase && isEsmShCdn(cdnBase)) {
+        return resolveHttp(jsrToCdnUrl(specifier, cdnBase));
+      }
+      throw new Error(
+        `Cannot resolve "${specifier}": jsr: specifiers are only supported on esm.sh. ` +
+          `Specify --cdn or --cdn=https://esm.sh/ to enable them.`,
+      );
+    }
 
     // Direct HTTP(S) URL
     if (isHttpUrl(specifier)) {

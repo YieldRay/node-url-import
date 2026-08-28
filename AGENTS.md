@@ -6,126 +6,96 @@
 npm run typecheck          # tsc --noEmit (run FIRST — catches overload/type issues)
 npm run build              # tsc --declaration → dist/
 npm test                   # node --import ./src/register-hooks.ts --test src/*.test.ts
-npm run cli -- [args]      # run CLI from source (no build needed)
+npm run cli -- [args]      # run CLI from source (no build needed); flags: npm run cli -- --help
 ```
 
-**Order matters:** `typecheck → build → test`. Tests load from `src/` via the hook (no build needed), but `build` must pass before publishing.
+Run in order typecheck → build → test. Tests run from `src/` via the hook (build needed only before publishing). Single test file:
 
-**Run a single test file:**
 ```sh
 node --import ./src/register-hooks.ts --test src/hooks.test.ts
 ```
 
 ## TypeScript Constraints
 
-- `erasableSyntaxOnly: true` — no `enum`, no `namespace`, no parameter properties
-- `verbatimModuleSyntax: true` — use `import type { … }` for type-only imports; no `import { type Foo }`-style mixed with value imports unless separate statement
-- `.ts` extensions in all relative imports (Node native type-stripping)
-- `rewriteRelativeImportExtensions: true` — tsc rewrites `.ts` → `.js` in emit
-- No `as` type casts in production code — use overloads or generics instead
+`tsconfig` enforces `erasableSyntaxOnly`, `verbatimModuleSyntax`, `rewriteRelativeImportExtensions` — so: no enums/namespaces/parameter properties, `.ts` extensions on relative imports, `import type` for type-only imports.
+
+Additional rules beyond the compiler:
+
+- Prefer overloads/generics over `as` casts. Accepted exception: narrowing untyped boundaries (parseArgs `values`, untyped worker-port messages).
+- The implementation signatures of `createResolve`/`createLoad` return `T | Promise<T>` with no explicit return annotation — concrete types reach callers via the overloads. Keep them unannotated.
 
 ## Architecture
 
-Node.js loader hook that lets scripts `import` and `require` modules directly from HTTP(S) URLs, mirroring Deno's behaviour.
+Loader hook letting scripts `import` and `require` modules directly from HTTP(S) URLs, mirroring Deno.
 
-**Data flow on first load (import or require):**
+Data flow on first load:
+
 ```
 import "https://…" / require("https://…")
-  → hooks.ts resolve()       — calls fetchModuleSync(); handles mangled parentURL for transitive imports
-  → hooks.ts load()          — calls fetchModuleSync() (cache hit), infers format, returns as ESM
-  → sync-fetch.ts            — checks disk cache (readFileSync); on miss:
-    → Atomics.wait()         — blocks main thread
-    → sync-fetch-worker.ts   — worker runs async fetchModule(), writes cache
-    → Atomics.notify()       — wakes main thread
-    → receiveMessageOnPort() — reads result from MessagePort
-  → fetch.ts fetchModule()   — follows redirects manually (up to MAX_REDIRECTS=10), writes cache + lock
-  → cache.ts writeCache()    — writes one Deno-format file per redirect hop + one source entry
-  → lock.ts verifyLock()     — checks/updates deno.lock if --lock is active
+  → hooks.ts resolve()/load()  — fetchModuleSync(); parentURL, npm:, cdn handling
+  → sync-fetch.ts              — disk-cache hit → readFileSync; miss:
+                                 Atomics.wait() blocks main thread,
+                                 sync-fetch-worker runs async fetchModule(),
+                                 Atomics.notify() + receiveMessageOnPort() returns
+  → fetch.ts                   — manual redirects (MAX_REDIRECTS=10), writes cache + lock
+  → cache.ts writeCache()      — one Deno-format stub per redirect hop + one source entry
+  → lock.ts verifyLock()       — checks/updates deno.lock when enabled
 ```
-
-**Key modules:**
 
 | File | Role |
 |---|---|
-| `src/hooks.ts` | Synchronous `resolve` + `load` hooks (for `module.registerHooks()`); `npm:` specifier stripping; `--cdn` bare-specifier mapping (skips node built-ins via `isBuiltin`); format inference (including TypeScript → `module-typescript`); handles CJS parentURL mangling for transitive imports |
-| `src/loader.ts` | Async `resolve` + `load` hooks (for `module.register()`); thin wrapper delegating to hooks.ts |
-| `src/register-hooks.ts` | Entry point: calls `module.registerHooks()` on Node 22.15+, falls back to `module.register()` on 18.19+/20.6+ |
-| `src/sync-fetch.ts` | Checks disk cache with `readFileSync`, on miss blocks via `Atomics.wait` while worker fetches |
-| `src/sync-fetch-worker.ts` | Persistent worker thread running async `fetchModule()`, signals via `Atomics.notify` + `MessagePort` |
-| `src/fetch.ts` | Async HTTP fetch with manual redirect tracking; builds full `redirectChain[]` for cache |
-| `src/cache.ts` | Deno-compatible disk cache at `$DENO_DIR/remote/`; files keyed by `sha256(url.pathname)` per host |
-| `src/lock.ts` | Deno-compatible lock file (version 5); lazy-loaded, flushed after each write |
-| `src/tmp.ts` | `--tmp` mode: writes fetched modules to human-readable tmp dir; reverse-maps tmp paths back to HTTP URLs |
-| `src/cli.ts` | CLI wrapper: parses own flags, forwards unknown flags to Node, spawns child `node` process |
-| `src/progress.ts` | TTY progress bar shown on stderr during downloads |
-| `src/constants.ts` | `NAME`, `MAX_REDIRECTS`, `isHttpUrl()` |
-| `src/index.ts` | Public programmatic API re-exports |
+| `src/hooks.ts` | Shared sync/async resolve+load logic; `npm:` stripping; `--cdn` bare-specifier mapping (skips node built-ins); `jsr:` → esm.sh mapping; format inference (TypeScript → `module-typescript`); CJS parentURL mangling; `URL_IMPORT_MAIN` entry redirect |
+| `src/jsr.ts` | `jsr:` specifier validation and mapping to esm.sh's `/jsr/` endpoint (enabled only when the CDN is esm.sh) |
+| `src/loader.ts` | Async hooks for `module.register()`; delegates to hooks.ts |
+| `src/register-hooks.ts` | Entry point: `registerHooks()` on Node 22.15+, falls back to `register()` on 18.19+/20.6+ |
+| `src/sync-fetch.ts` | Disk-cache check, then blocks via Atomics.wait + persistent worker |
+| `src/sync-fetch-worker.ts` | Persistent worker thread running async `fetchModule()` |
+| `src/fetch.ts` | Async HTTP fetch, manual redirect tracking, builds full `redirectChain[]` |
+| `src/cache.ts` | Deno-compatible cache: `$DENO_DIR/remote/<scheme>/<host>/sha256(pathname)` (macOS default `~/Library/Caches/deno`, Linux `~/.cache/deno`, Windows `%LOCALAPPDATA%\deno`) |
+| `src/lock.ts` | Deno lock v5: source hashes, redirect records, frozen mode; lazy-loaded, flushed after each write |
+| `src/tmp.ts` | `--tmp` mode: readable tmp paths mirroring URLs + reverse tmp-path → URL map |
+| `src/cli.ts` | Parses own flags → env vars, splits/forwards node flags, spawns child `node` |
+| `src/progress.ts` | TTY progress bar on stderr during downloads |
+| `src/constants.ts` | `NAME`, `MAX_REDIRECTS=10`, `isHttpUrl()` |
+| `src/index.ts` | Public API re-exports: `fetchModule`, `clearCache`, `CacheEntry` |
 
-**Package exports:**
-- `.` → `dist/index.js` — programmatic API (`fetchModule`, `clearCache`, etc.)
-- `./register` → `dist/register-hooks.js` — `--import` flag entry point
+Byte-format compatibility with Deno's remote cache is intentional — Node and Deno share the cache transparently; keep the metadata comment format stable.
 
-**Cache format:** Identical to Deno's remote module cache. Directory: `$DENO_DIR/remote/<scheme>/<host>/` (respects `DENO_DIR` env var; defaults to `~/Library/Caches/deno/remote` on macOS, `~/.cache/deno/remote` on Linux). Filename: `sha256(url.pathname)` (hex). Node and Deno share the same cache transparently.
+## Gotchas
 
-## Critical Patterns
-
-### Sync hooks (hooks.ts)
-- `createResolve(fetchFn)` / `createLoad(fetchFn)` are overloaded: sync fetchFn → `ResolveHookSync`, async fetchFn → `ResolveHookAsync`
-- Implementation signature returns `T | Promise<T>` but callers see concrete overload types — never add explicit return type annotation to the implementation
-- `fetchModuleSync` blocks via `Atomics.wait` + worker; never call async functions in the resolve/load body
-
-### CJS parentURL mangling
-- When Node requires a CJS file that imports an HTTP URL, the parentURL is mangled to a file path like `file:///cwd/https:/esm.sh/...`
-- `extractHttpUrlFromParent` reconstructs the real HTTP URL — any change to this regex breaks transitive CJS imports
-
-### Worker path resolution (sync-fetch.ts)
-- Worker file path must resolve from both `.ts` (dev, Node 24+ type-stripping) and compiled `.js` (dist)
-- Uses `import.meta.url` + relative path; do NOT hardcode absolute paths
-- Worker is created with `execArgv: []` — do NOT inherit parent's execArgv (flags like `--input-type`, `--tls-cipher-list` are invalid for workers and cause silent hangs)
-
-### Cache (cache.ts) and Lock (lock.ts)
-- All filesystem operations are synchronous (`readFileSync`, `writeFileSync`, `mkdirSync`)
-- Cache format is Deno-compatible; don't change the metadata comment format
-
-### CLI entry-point redirect (hooks.ts + cli.ts)
-- When the CLI target is an HTTP URL, it sets `URL_IMPORT_MAIN=<url>` and passes an existing file as the entry point
-- The resolve hook detects `URL_IMPORT_MAIN` + no `parentURL` (entry-point resolution) and redirects to the HTTP URL
-- This makes `import.meta.main === true` and `import.meta.url` reflect the remote URL
-- `process.argv[1]` will be the placeholder file path (known limitation)
-
-### CLI flag forwarding
-- The CLI spawns a child `node` process rather than running inline
-- Own flags (`--reload`, `--lock`, etc.) are translated to environment variables so the loader thread picks them up
-
-### Known limitation: `createRequire(import.meta.url)` in remote modules
-- We set a remote module's `import.meta.url` to its HTTP URL, but Node's `module.createRequire()` only accepts `file:` URLs / absolute paths and throws `ERR_INVALID_ARG_VALUE` on an `https:` URL
-- So remote ESM bundles (e.g. esbuild output) that call `createRequire(import.meta.url)` at load time fail — even when they only use the resulting `require` for node built-ins
-- Deno works because it polyfills `createRequire` to accept remote URLs; we rely on Node's native (file-only) implementation
-- Workaround: import the module via `--cdn` off a CDN that ships a `file:`-friendly build, or use a build that doesn't call `createRequire(import.meta.url)`
+- **Sync hooks**: no async calls inside resolve/load bodies. All blocking funnels through `fetchModuleSync` (Atomics.wait + worker).
+- **CJS parentURL mangling**: requiring an HTTP URL from CJS mangles parentURL into a path like `file:///cwd/https:/esm.sh/...`; `extractHttpUrlFromParent` reconstructs the real URL. Changing that regex breaks transitive CJS imports.
+- **Worker startup** (sync-fetch.ts): resolve the worker path from `import.meta.url` so both `.ts` (dev) and `.js` (dist) work; never hardcode paths. Create the worker with `execArgv: []` — inherited node flags cause silent hangs.
+- **cache.ts / lock.ts**: filesystem operations stay synchronous.
+- **CLI entry-point redirect**: an HTTP target makes the CLI set `URL_IMPORT_MAIN` and pass register-hooks as a placeholder entry file; the resolve hook redirects when parentURL is absent, giving the remote module `import.meta.main === true`. Known limit: `process.argv[1]` remains the placeholder path.
+- **Remote ESM bundles calling `createRequire(import.meta.url)` fail** — Node's native `createRequire` rejects `https:` URLs (Deno polyfills this; we rely on native behavior). Workaround: import off a CDN that ships a `file:`-friendly build, or use a bundle that avoids that call.
 
 ## Node Version Compatibility
 
-| Feature | Minimum Node |
-|---------|-------------|
+| Feature | Min Node |
+|---|---|
 | `module.register()` (ESM only) | 18.19 / 20.6 |
 | `module.registerHooks()` (ESM + CJS) | 22.15 / 23.5 |
-| Remote TypeScript (`.ts`, `.tsx`, `.mts`, `.cts`) | 22.18 (type stripping enabled by default) |
-| CJS `require()` of HTTP URLs | 24+ |
-| Native `.ts` type-stripping (dev) | 22.6+ (with `--experimental-strip-types`) / 24+ (stable) |
+| Remote TypeScript (type stripping) | 22.18 |
+| CJS `require()` of HTTP URLs | 24 |
 
-## Smoke Testing Across Versions
+Smoke-test before pushing:
 
-Use `fnm` (or `nvm`) to verify before pushing:
 ```sh
 fnm use 18 && node --import ./src/register-hooks.ts -e "import('https://esm.sh/ms')"
 fnm use 22 && node --import ./src/register-hooks.ts -e "import('https://esm.sh/ms')"
 fnm use 24 && node --import ./src/register-hooks.ts -e "require('https://esm.sh/ms')"
 ```
 
-## Environment Variables (set by CLI, read by hooks)
+## Environment Variables (CLI sets, hooks read)
 
-`URL_IMPORT_RELOAD`, `URL_IMPORT_LOCK`, `URL_IMPORT_TMP` — the CLI translates its own flags into these so the loader thread picks them up. Don't read CLI flags directly in hook code.
+Hook code reads configuration only through these — never parse CLI flags directly:
 
-`URL_IMPORT_MAIN` — set by the CLI when the target is an HTTP URL. The resolve hook reads this at module load time and redirects the entry-point resolution to the HTTP URL.
-
-`URL_IMPORT_CDN` — set by the CLI from `--cdn[=<url>]` (defaults to `https://esm.sh/`). When set, the resolve hook maps bare specifiers to `<cdn><specifier>` (e.g. `ws` → `https://esm.sh/ws`), skipping node built-ins (`isBuiltin`), relative specifiers, and anything carrying a URL scheme.
+| Var | Set by | Effect |
+|---|---|---|
+| `URL_IMPORT_RELOAD=1` | `-r`/`--reload` | bypass disk cache |
+| `URL_IMPORT_TMP=1` | `--tmp` | write modules to readable tmp dir (tmp.ts) |
+| `URL_IMPORT_LOCK=path` | `--lock`, `--lock-file <path>`, implied by `--frozen` | enable deno.lock recording/verification |
+| `URL_IMPORT_FROZEN=1` | `--frozen` | error when lock out of date, instead of updating |
+| `URL_IMPORT_CDN=<url>` | `--cdn[=<url>]` (default `https://esm.sh/`) | map bare specifiers to `<cdn><specifier>`; enables `jsr:` specifiers when esm.sh |
+| `URL_IMPORT_MAIN=<url>` | set for an HTTP entry target | redirect entry-point resolution to that URL |
