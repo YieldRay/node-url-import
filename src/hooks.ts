@@ -1,317 +1,199 @@
 /**
  * Shared resolve + load hook logic, parameterized by the fetch function.
  *
- * - For module.registerHooks() (sync): uses fetchModuleSync
- * - For module.register() (async, in loader worker): uses fetchModule (async)
+ * - module.registerHooks() uses fetchModuleSync for import and require.
+ * - module.register() uses fetchModule in Node's asynchronous loader thread.
  *
- * Exported factory functions createResolve/createLoad produce the hook
- * functions. Also exports ready-made sync versions for registerHooks.
+ * The factories share URL normalization and format inference while their
+ * overloads keep synchronous and asynchronous callers correctly typed.
  */
 
-import type { ResolveHookContext, ResolveFnOutput, LoadHookContext, LoadFnOutput, ResolveHookSync, LoadHookSync } from "node:module";
-import { isBuiltin } from "node:module";
+import type {
+  ResolveHookContext, ResolveFnOutput, LoadHookContext, LoadFnOutput, ResolveHookSync, LoadHookSync,
+} from "node:module";
+import { createRequire, isBuiltin } from "node:module";
+import { resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
 import { fetchModuleSync } from "./sync-fetch.ts";
-import { isHttpUrl } from "./constants.ts";
+import { DEFAULT_CDN, isHttpUrl } from "./constants.ts";
 import { isEsmShCdn, jsrToCdnUrl } from "./jsr.ts";
 import { tmpEnabled, urlToTmpPath, writeTmpFile, tmpPathToUrl } from "./tmp.ts";
+import { verifyModuleLock } from "./lock.ts";
 import type { CacheEntry } from "./cache.ts";
 
 /**
- * Strip `npm:` prefix and optional `@version` from an npm specifier.
- *   npm:ms@2.1.3           → ms
- *   npm:@scope/pkg@1.0.0   → @scope/pkg
- *   npm:@scope/pkg@1.0.0/s → @scope/pkg/s
- *   npm:lodash-es          → lodash-es
+ * Strip `npm:` and the optional version for local Node package resolution.
+ *   npm:ms@2.1.3             → ms
+ *   npm:@scope/pkg@1.0.0     → @scope/pkg
+ *   npm:@scope/pkg@1.0.0/sub → @scope/pkg/sub
+ *   npm:lodash-es           → lodash-es
+ * The original version is kept when an uninstalled package falls back to a CDN.
  */
 export function stripNpmSpecifier(specifier: string): string {
-  let bare = specifier.slice(4); // remove "npm:"
-
-  // For scoped packages (@scope/pkg@version), the version @ is after the first /
-  // For unscoped packages (pkg@version), the version @ is the first @
-  const isScoped = bare.startsWith("@");
-  const versionAtIdx = isScoped
-    ? bare.indexOf("@", bare.indexOf("/") + 1)
-    : bare.indexOf("@");
-
-  if (versionAtIdx > 0) {
-    const afterAt = bare.indexOf("/", versionAtIdx);
-    if (afterAt > 0) {
-      // @scope/pkg@version/subpath → @scope/pkg/subpath
-      bare = bare.slice(0, versionAtIdx) + bare.slice(afterAt);
-    } else {
-      // @scope/pkg@version → @scope/pkg
-      bare = bare.slice(0, versionAtIdx);
-    }
-  }
-
-  return bare;
+  return specifier.slice(4).replace(/^(@[^/]+\/[^/@]+|[^/@]+)@[^/]+/, "$1");
 }
 
 /**
- * When CJS code does `require("https://...")`, Node's registerHooks resolves the
- * URL but then internally converts it to a file path for the CJS module system.
- * For example, `https://esm.sh/ms@2.1.3` becomes a parentURL like:
- *   file:///cwd/https:/esm.sh/ms@2.1.3
- *
- * We detect this pattern and reconstruct the original HTTP URL so transitive
- * relative imports (e.g., `/ms@2.1.3/es2022/ms.mjs`) resolve correctly.
- */
-function extractHttpUrlFromParent(parentURL: string): string | null {
-  const match = parentURL.match(/\/(https?:)\/([^/].*)$/);
-  if (match) {
-    return `${match[1]}//${match[2]}`;
-  }
-  return null;
-}
-
-/**
- * Get the effective HTTP parent URL from context.parentURL.
- * Returns the parentURL as-is if it's already HTTP, reconstructs it if mangled,
- * or returns null if it's a normal file URL.
+ * Recover the HTTP parent for normal URL imports, --tmp modules and CJS.
+ * Node's CJS loader mangles https://esm.sh/pkg into file:///cwd/https:/esm.sh/pkg;
+ * reconstructing it keeps transitive relative requires on the remote server.
  */
 function getHttpParentUrl(parentURL: string | undefined): string | null {
   if (!parentURL) return null;
   if (isHttpUrl(parentURL)) return parentURL;
-  return extractHttpUrlFromParent(parentURL);
+  const temporaryUrl = tmpEnabled ? tmpPathToUrl(parentURL) : null;
+  if (temporaryUrl) return temporaryUrl;
+  // CJS normalizes https://host/path into file:///cwd/https:/host/path.
+  const match = parentURL.match(/\/(https?:)\/([^/].*)$/);
+  return match ? `${match[1]}//${match[2]}` : null;
 }
 
-/**
- * Whether the running Node version supports the "module-typescript" /
- * "commonjs-typescript" load formats natively (without flags).
- * Type stripping is enabled by default in Node 22.18+ and 23+/24+.
- * @see https://nodejs.org/docs/latest-v22.x/api/cli.html#--no-experimental-strip-types
- */
-const supportsTypeScriptFormat: boolean = (() => {
+/** Whether this Node version enables native TypeScript load formats by default. */
+const supportsTypeScriptFormat = (() => {
   const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
   return major > 22 || (major === 22 && minor >= 18);
 })();
 
 /**
- * Resolve the load format for a TypeScript source. On Node versions without
- * native type stripping (< 22.18), returning "module"/"commonjs" would hand
- * raw TypeScript to the parser and fail with a cryptic syntax error, so we
- * throw an explicit, actionable error instead.
+ * Resolve the load format for TypeScript. Older Node versions cannot strip
+ * types, so fail explicitly rather than handing raw TypeScript to the JS parser.
+ * .cts must keep CommonJS semantics even when served with a TypeScript MIME type.
  */
-function typeScriptFormat(url: string, commonjs: boolean, tsSupported: boolean): string {
-  if (!tsSupported) {
-    throw new Error(
-      `Cannot load remote TypeScript module ${url}: this Node version ` +
-        `(${process.versions.node}) does not support type stripping. ` +
-        `Upgrade to Node 22.18+ or 24+ to import remote TypeScript.`,
-    );
+function typeScriptFormat(url: string, commonjs: boolean, supported: boolean): string {
+  if (!supported) {
+    throw new Error(`Cannot load remote TypeScript module ${url}: this Node version (${process.versions.node}) ` +
+      "does not support type stripping. Upgrade to Node 22.18+ or 24+.");
   }
   return commonjs ? "commonjs-typescript" : "module-typescript";
 }
 
 /**
- * `tsSupported` is injectable for testing; it defaults to the running Node
- * version's native type-stripping support.
+ * Infer the module format from Content-Type and the final URL's extension.
+ * tsSupported is injectable for tests and otherwise follows the running Node.
  */
-export function inferFormat(
-  url: string,
-  contentType: string,
-  tsSupported: boolean = supportsTypeScriptFormat,
-): string {
-  const ct = contentType.toLowerCase();
-
-  if (ct.includes("application/json")) return "json";
-  if (ct.includes("application/wasm")) return "wasm";
-  if (ct.includes("text/typescript") || ct.includes("application/typescript"))
-    return typeScriptFormat(url, false, tsSupported);
-
+export function inferFormat(url: string, contentType: string, tsSupported = supportsTypeScriptFormat): string {
+  const type = contentType.toLowerCase();
   const pathname = new URL(url).pathname;
+  if (type.includes("application/json")) return "json";
+  if (type.includes("application/wasm")) return "wasm";
+  if (pathname.endsWith(".cts")) return typeScriptFormat(url, true, tsSupported);
+  if (type.includes("text/typescript") || type.includes("application/typescript")) {
+    return typeScriptFormat(url, false, tsSupported);
+  }
   if (pathname.endsWith(".json")) return "json";
   if (pathname.endsWith(".wasm")) return "wasm";
-  if (pathname.endsWith(".cts")) return typeScriptFormat(url, true, tsSupported);
   if (pathname.endsWith(".cjs")) return "commonjs";
-  if (pathname.endsWith(".mts")) return typeScriptFormat(url, false, tsSupported);
-  if (pathname.endsWith(".mjs")) return "module";
-  if (pathname.endsWith(".ts") || pathname.endsWith(".tsx"))
-    return typeScriptFormat(url, false, tsSupported);
-
+  if (/\.(?:ts|tsx|mts)$/.test(pathname)) return typeScriptFormat(url, false, tsSupported);
   return "module";
 }
 
-// Infer NextResolve/NextLoad from Node's sync hook types
 type NextResolve = Parameters<ResolveHookSync>[2];
 type NextLoad = Parameters<LoadHookSync>[2];
-
-// Async hook types (same params as sync, but return Promise)
 type ResolveHookAsync = (...args: Parameters<ResolveHookSync>) => Promise<ResolveFnOutput>;
 type LoadHookAsync = (...args: Parameters<LoadHookSync>) => Promise<LoadFnOutput>;
 
-/**
- * The HTTP URL to treat as the main entry module. When set, the resolve hook
- * redirects the entry-point file resolution to this URL so that
- * import.meta.main is true and import.meta.url reflects the remote URL.
- * Set by the CLI via the URL_IMPORT_MAIN environment variable.
- */
-const mainUrl: string | undefined = process.env.URL_IMPORT_MAIN;
-
-/**
- * When set (via --cdn / URL_IMPORT_CDN), bare specifiers that aren't Node
- * built-ins are resolved against this base URL, e.g. `ws` → `https://esm.sh/ws`.
- * Always ends with a trailing slash. Set by the CLI.
- */
-const cdnBase: string | undefined = process.env.URL_IMPORT_CDN;
-
-/** Matches a leading URL scheme like `file:`, `http:`, `node:`, `data:`. */
+/** CLI entry redirect: make the remote module the real import.meta.main entry. */
+const mainUrl = process.env.URL_IMPORT_MAIN;
+/** Bare packages map to this CDN; npm: still checks node_modules first. */
+const cdnBase = process.env.URL_IMPORT_CDN;
+/** A leading scheme excludes node:, data:, file:, npm: and other full URLs. */
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+const projectParentUrl = (): string => pathToFileURL(resolvePath(process.cwd(), "package.json")).href;
+// Hand the already-fetched source from resolve to load, including with --reload.
+const pendingLoads = new Map<string, CacheEntry>();
 
-/** A relative or absolute-path specifier (`./`, `../`, or `/`). */
+/** Relative and absolute-path imports resolve against the effective HTTP parent. */
 function isRelativeSpecifier(specifier: string): boolean {
-  return (
-    specifier.startsWith("./") ||
-    specifier.startsWith("../") ||
-    specifier.startsWith("/")
-  );
+  return specifier.startsWith("./") || specifier.startsWith("../") || specifier.startsWith("/");
 }
 
-/**
- * A bare specifier is a package name (e.g. `ws`, `@scope/pkg/sub`) — not
- * relative (`.`/`..`/`/`) and carrying no URL scheme (excludes `file:`,
- * `http:`, `node:`, `npm:`, etc.). These are the ones a CDN can map.
- */
+/** Package names such as ws or @scope/pkg/sub, excluding paths and URL schemes. */
 function isBareSpecifier(specifier: string): boolean {
   return !isRelativeSpecifier(specifier) && !SCHEME_RE.test(specifier);
 }
 
+/** Use require.resolve for npm: packages, anchored to a local caller or the project. */
+function resolveLocalPackage(specifier: string, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput {
+  const parentURL = context.parentURL && !getHttpParentUrl(context.parentURL) ? context.parentURL : projectParentUrl();
+  if (isBuiltin(specifier)) return nextResolve(specifier, { ...context, parentURL });
+  const resolved = createRequire(parentURL).resolve(specifier);
+  return nextResolve(pathToFileURL(resolved).href, { ...context, parentURL });
+}
+
 /**
- * Create a resolve hook parameterized by the fetch function.
- * Sync fetchFn produces ResolveHookSync, async produces ResolveHookAsync.
+ * Create a resolve hook. Sync fetch functions produce sync hooks; async fetch
+ * functions produce async hooks. All HTTP paths follow redirects before Node
+ * chooses a module identity, so its relative imports use the final URL.
  */
 export function createResolve(fetchFn: (url: string) => CacheEntry): ResolveHookSync;
 export function createResolve(fetchFn: (url: string) => Promise<CacheEntry>): ResolveHookAsync;
 export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>) {
-  return function resolve(
-    specifier: string,
-    context: ResolveHookContext,
-    nextResolve: NextResolve,
-  ): ResolveFnOutput | Promise<ResolveFnOutput> {
-    // Entry-point redirect: when the CLI sets URL_IMPORT_MAIN, the first
-    // resolve call (parentURL is undefined) for the dummy entry file is
-    // redirected to the HTTP URL so Node treats it as the main module.
-    if (mainUrl && !context.parentURL && !isHttpUrl(specifier)) {
-      return { shortCircuit: true, url: mainUrl };
-    }
-
-    // npm: specifier — strip prefix and version, let Node resolve from node_modules.
-    if (specifier.startsWith("npm:")) {
-      return nextResolve(stripNpmSpecifier(specifier), context);
-    }
-
-    // Fetch an HTTP(S) URL and turn it into a resolve result (respecting --tmp).
+  return function resolve(specifier: string, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput | Promise<ResolveFnOutput> {
+    // Direct URLs, relative imports, CDN packages and the CLI entry share this path.
     const resolveHttp = (url: string): ResolveFnOutput | Promise<ResolveFnOutput> => {
       const handleFetched = (entry: CacheEntry): ResolveFnOutput => {
+        const format = inferFormat(entry.finalUrl, entry.contentType);
         if (tmpEnabled) {
-          const tmpPath = urlToTmpPath(entry.finalUrl, entry.contentType);
-          writeTmpFile(tmpPath, entry.source);
-          const format = inferFormat(entry.finalUrl, entry.contentType);
-          return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
+          const temporaryPath = urlToTmpPath(entry.finalUrl, entry.contentType);
+          writeTmpFile(temporaryPath, entry.source);
+          return { shortCircuit: true, url: pathToFileURL(temporaryPath).href, format };
         }
-        return { shortCircuit: true, url: entry.finalUrl };
+        pendingLoads.set(entry.finalUrl, entry);
+        return { shortCircuit: true, url: entry.finalUrl, format };
       };
-      const result = fetchFn(url);
-      return result instanceof Promise ? result.then(handleFetched) : handleFetched(result);
+      const entry = fetchFn(url);
+      return entry instanceof Promise ? entry.then(handleFetched) : handleFetched(entry);
     };
 
-    // jsr: specifier — only when --cdn points at esm.sh (the default CDN).
+    // Node resolves the placeholder entry without a parentURL.
+    if (mainUrl && !context.parentURL && !isHttpUrl(specifier)) return resolveHttp(mainUrl);
+
+    // Installed npm: packages stay local; only MODULE_NOT_FOUND triggers a CDN fallback.
+    if (specifier.startsWith("npm:")) {
+      const bare = stripNpmSpecifier(specifier);
+      try {
+        return resolveLocalPackage(bare, context, nextResolve);
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "MODULE_NOT_FOUND")) throw error;
+        return resolveHttp((cdnBase ?? DEFAULT_CDN) + specifier.slice(4));
+      }
+    }
+
+    // esm.sh is the only supported CDN with a /jsr/ endpoint.
     if (specifier.startsWith("jsr:")) {
-      if (cdnBase && isEsmShCdn(cdnBase)) {
-        return resolveHttp(jsrToCdnUrl(specifier, cdnBase));
-      }
-      throw new Error(
-        `Cannot resolve "${specifier}": jsr: specifiers are only supported on esm.sh. ` +
-          `Specify --cdn or --cdn=https://esm.sh/ to enable them.`,
-      );
+      if (cdnBase && isEsmShCdn(cdnBase)) return resolveHttp(jsrToCdnUrl(specifier, cdnBase));
+      throw new Error(`Cannot resolve "${specifier}": jsr: specifiers require --cdn=https://esm.sh/.`);
     }
+    if (isHttpUrl(specifier)) return resolveHttp(specifier);
+    if (cdnBase && isBareSpecifier(specifier) && !isBuiltin(specifier)) return resolveHttp(cdnBase + specifier);
 
-    // Direct HTTP(S) URL
-    if (isHttpUrl(specifier)) {
-      return resolveHttp(specifier);
-    }
-
-    // CDN mode: map a bare package specifier to the CDN, e.g. `ws` →
-    // `https://esm.sh/ws`. Node built-ins (fs, http, ...) are left untouched.
-    if (cdnBase && isBareSpecifier(specifier) && !isBuiltin(specifier)) {
-      return resolveHttp(cdnBase + specifier);
-    }
-
-    // --tmp mode: relative import inside a module under the tmp dir
-    if (tmpEnabled && context.parentURL && isRelativeSpecifier(specifier)) {
-      const parentHttpUrl = tmpPathToUrl(context.parentURL);
-      if (parentHttpUrl) {
-        const resolved = new URL(specifier, parentHttpUrl).href;
-        const result = fetchFn(resolved);
-
-        const handleFetched = (entry: CacheEntry): ResolveFnOutput => {
-          const tmpPath = urlToTmpPath(entry.finalUrl, entry.contentType);
-          writeTmpFile(tmpPath, entry.source);
-          const format = inferFormat(entry.finalUrl, entry.contentType);
-          return { shortCircuit: true, url: pathToFileURL(tmpPath).href, format };
-        };
-
-        if (result instanceof Promise) {
-          return result.then(handleFetched);
-        }
-        return handleFetched(result);
-      }
-    }
-
-    // Relative or absolute-path import inside an HTTP-loaded module.
-    // Also handles the case where Node mangles HTTP URLs into file paths for CJS require.
-    if (context.parentURL && isRelativeSpecifier(specifier)) {
-      const httpParent = getHttpParentUrl(context.parentURL);
-      if (httpParent) {
-        const resolved = new URL(specifier, httpParent).href;
-        return { shortCircuit: true, url: resolved };
-      }
-    }
-
-    // Bare specifier (npm package or node built-in) imported from an HTTP
-    // module. Node's default resolver would try to compute a package scope
-    // relative to the HTTP parentURL and throw `ERR_INVALID_URL`, so drop the
-    // HTTP parent and let Node resolve it from the local project (Deno-like).
-    if (context.parentURL && getHttpParentUrl(context.parentURL)) {
-      return nextResolve(specifier, { ...context, parentURL: undefined });
-    }
-
+    const httpParent = getHttpParentUrl(context.parentURL);
+    if (httpParent && isRelativeSpecifier(specifier)) return resolveHttp(new URL(specifier, httpParent).href);
+    // Native package resolution cannot use an HTTP parent. Keep its import/
+    // require conditions but anchor it to the local project's node_modules.
+    if (httpParent) return nextResolve(specifier, { ...context, parentURL: projectParentUrl() });
     return nextResolve(specifier, context);
   };
 }
 
-/**
- * Create a load hook parameterized by the fetch function.
- * Sync fetchFn produces LoadHookSync, async produces LoadHookAsync.
- */
+/** Create a load hook that supplies verified remote source bytes and their format. */
 export function createLoad(fetchFn: (url: string) => CacheEntry): LoadHookSync;
 export function createLoad(fetchFn: (url: string) => Promise<CacheEntry>): LoadHookAsync;
 export function createLoad(fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>) {
-  return function load(
-    url: string,
-    context: LoadHookContext,
-    nextLoad: NextLoad,
-  ): LoadFnOutput | Promise<LoadFnOutput> {
-    if (isHttpUrl(url)) {
-      const result = fetchFn(url);
-
-      const handleFetched = (entry: CacheEntry): LoadFnOutput => {
-        const format = inferFormat(url, entry.contentType);
-        return { shortCircuit: true, format, source: entry.source };
-      };
-
-      if (result instanceof Promise) {
-        return result.then(handleFetched);
-      }
-      return handleFetched(result);
-    }
-
-    return nextLoad(url, context);
+  return function load(url: string, context: LoadHookContext, nextLoad: NextLoad): LoadFnOutput | Promise<LoadFnOutput> {
+    if (!isHttpUrl(url)) return nextLoad(url, context);
+    const cached = pendingLoads.get(url);
+    pendingLoads.delete(url);
+    const handleFetched = (entry: CacheEntry): LoadFnOutput => {
+      verifyModuleLock(entry);
+      return { shortCircuit: true, format: inferFormat(entry.finalUrl, entry.contentType), source: entry.source };
+    };
+    const entry = cached ?? fetchFn(url);
+    return entry instanceof Promise ? entry.then(handleFetched) : handleFetched(entry);
   };
 }
 
-// Ready-made sync hooks for module.registerHooks()
+// Ready-made synchronous hooks for module.registerHooks().
 export const resolve = createResolve(fetchModuleSync);
 export const load = createLoad(fetchModuleSync);

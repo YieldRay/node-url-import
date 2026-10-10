@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { ResolveHookContext, LoadHookContext } from "node:module";
-import { resolve, load, inferFormat } from "./hooks.ts";
+import { resolve, load, inferFormat, createResolve } from "./hooks.ts";
 
 const defaultResolveContext: ResolveHookContext = {
   conditions: [],
@@ -52,14 +52,17 @@ describe("hooks.resolve (sync)", () => {
 
   it("should strip npm: specifiers and delegate to nextResolve", () => {
     const next = makeNextResolve();
-    const result = resolve("npm:ms@2.1.3", defaultResolveContext, next.fn);
+    const result = resolve("npm:typescript@6", defaultResolveContext, next.fn);
     assert.equal(next.wasCalled(), true);
-    assert.equal(result.url, "ms");
+    assert.ok(result.url.startsWith("file:"));
   });
 
   it("should resolve relative imports against HTTP parent URL", () => {
     const next = makeNextResolve();
-    const result = resolve("./foo.js", {
+    const resolveFixture = createResolve((url) => ({
+      url, finalUrl: url, source: "export default 1;", contentType: "application/javascript", redirectChain: [url],
+    }));
+    const result = resolveFixture("./foo.js", {
       ...defaultResolveContext,
       parentURL: "https://esm.sh/bar/index.js",
     }, next.fn);
@@ -110,8 +113,10 @@ describe("inferFormat", () => {
     assert.equal(inferFormat("https://example.com/mod.mts", "application/javascript"), "module-typescript");
   });
 
-  it("should return commonjs-typescript for .cts extension", () => {
-    assert.equal(inferFormat("https://example.com/mod.cts", "application/javascript"), "commonjs-typescript");
+  it("keeps .cts CommonJS semantics regardless of TypeScript MIME", () => {
+    for (const contentType of ["application/javascript", "text/typescript", "application/typescript; charset=utf-8"]) {
+      assert.equal(inferFormat("https://example.com/mod.cts", contentType), "commonjs-typescript");
+    }
   });
 
   it("should return module-typescript for text/typescript content-type", () => {
