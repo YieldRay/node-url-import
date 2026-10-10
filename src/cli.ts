@@ -5,90 +5,99 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, styleText } from "node:util";
-import { NAME, isHttpUrl } from "./constants.ts";
-import { importMetaUrl as registerImportMetaUrl } from "./register-hooks.ts";
+import { DEFAULT_CDN, NAME, isHttpUrl } from "./constants.ts";
 import { clearCache } from "./cache.ts";
 
-// Argument layout:
-//   node-url-import [our-flags] [node-flags] <script-or-url> [script-args]
-//
-// parseArgs with strict:false consumes known flags and leaves unknown ones.
-// We use tokens:true to identify which args are ours vs unknown (node flags)
-// vs positionals (target + script args).
-
-const allArgs = process.argv.slice(2);
-
-const DEFAULT_CDN = "https://esm.sh/";
+// Resolve the preload path without registering hooks in the wrapper process.
+const registerImportMetaUrl = new URL(import.meta.url.endsWith(".ts") ? "./register-hooks.ts" : "./register-hooks.js", import.meta.url).href;
 
 const ownOptions = {
-  help: { type: "boolean", default: false },
-  "clear-cache": { type: "boolean", default: false },
-  tmp: { type: "boolean", default: false },
-  reload: { type: "boolean", short: "r", default: false },
-  lock: { type: "boolean", default: false },
+  help: { type: "boolean", short: "h" },
+  "clear-cache": { type: "boolean" },
+  tmp: { type: "boolean" },
+  reload: { type: "boolean", short: "r" },
+  lock: { type: "boolean" },
   "lock-file": { type: "string" },
-  frozen: { type: "boolean", default: false },
-  // Declared boolean so a bare `--cdn` doesn't swallow the target positional.
-  // `--cdn` → true (use default CDN); `--cdn=<url>` → that URL (see cdnBase below).
-  cdn: { type: "boolean", default: false },
+  frozen: { type: "boolean" },
+  cdn: { type: "boolean" },
 } as const;
 
-// The set of names/aliases that belong to us. Under strict:false, parseArgs
-// also puts unknown (node) flags into `values`, so we can't use `values` to
-// tell ours apart — we match token names against this set instead.
-const ownFlagNames = new Set<string>();
-for (const [name, opt] of Object.entries(ownOptions)) {
-  ownFlagNames.add(name);
-  if ("short" in opt && opt.short) ownFlagNames.add(opt.short);
+/**
+ * Node describes required values as --flag=... in its own help output.
+ * Inspect the running version rather than maintaining a stale list of flags;
+ * --inspect[=...] remains optional and must not consume the script positional.
+ */
+function nodeValueOptions(): Set<string> {
+  const help = spawnSync(process.execPath, ["--help"], {
+    encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" },
+  });
+  if (help.status !== 0) throw help.error ?? new Error("Unable to inspect Node command-line options");
+  const names = new Set<string>();
+  for (const line of help.stdout.split("\n")) {
+    const declaration = line.match(/^  ((?:--?[\w-]+(?:=[^\s,]+)?)(?:, --?[\w-]+(?:=[^\s,]+)?)*)/);
+    if (!declaration || !declaration[1]!.includes("=") || declaration[1]!.includes("[=")) continue;
+    for (const name of declaration[1]!.split(", ")) names.add(name.split("=")[0]!);
+  }
+  return names;
 }
 
-const { values, tokens } = parseArgs({
-  args: allArgs,
-  options: ownOptions,
-  strict: false,
-  allowPositionals: true,
-  tokens: true,
-});
-
-// Resolve the CDN base URL for bare-specifier mapping:
-//   (absent)        → undefined (feature off)
-//   --cdn           → DEFAULT_CDN
-//   --cdn=<url>     → <url> (a trailing slash is added if missing)
-function resolveCdnBase(value: string | boolean | undefined): string | undefined {
-  if (value === undefined || value === false) return undefined;
-  const base = value === true ? DEFAULT_CDN : value;
-  return base.endsWith("/") ? base : base + "/";
-}
-const cdnBase = resolveCdnBase(values.cdn as string | boolean | undefined);
-
-// Find the first positional token — that's the target script/URL.
-// Everything before it that's an unknown option token is a node flag.
-// Everything after it (remaining positionals + any flags) is script args.
-const firstPositional = tokens!.find((t) => t.kind === "positional");
-const targetIdx = firstPositional?.index;
-
-let target: string | undefined;
-let nodeFlags: string[] = [];
-let scriptArgs: string[] = [];
-
-if (targetIdx !== undefined) {
-  target = allArgs[targetIdx];
-  // Node flags = unknown option tokens whose index < targetIdx
-  // We reconstruct them from the raw argv to preserve --flag=value forms.
-  for (const t of tokens!) {
-    if (t.kind === "option" && t.index < targetIdx && !ownFlagNames.has(t.name)) {
-      // Unknown option — pass through to node
-      const raw = allArgs[t.index]!;
-      nodeFlags.push(raw);
-      // If the token consumed a value from the next arg (not inline =), include it
-      if (t.value !== undefined && !raw.includes("=")) {
-        nodeFlags.push(allArgs[t.index + 1]!);
+/**
+ * node-url-import [our-flags] [node-flags] <script-or-url> [script-args]
+ * Stop parsing at the target: later arguments belong exclusively to the script.
+ * Required Node values are consumed before searching for that target.
+ */
+function splitArguments(args: string[]) {
+  const ownArgs: string[] = [];
+  const nodeFlags: string[] = [];
+  const ownNames = new Set<string>(Object.keys(ownOptions).map((name) => `--${name}`));
+  ownNames.add("-r");
+  ownNames.add("-h");
+  let requiredNodeValues: Set<string> | undefined;
+  let customCdn: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index]!;
+    if (argument === "--") return { ownArgs, nodeFlags, customCdn, target: args[index + 1], scriptArgs: args.slice(index + 2) };
+    if (argument === "-" || !argument.startsWith("-")) {
+      return { ownArgs, nodeFlags, customCdn, target: argument, scriptArgs: args.slice(index + 1) };
+    }
+    const separator = argument.indexOf("=");
+    const name = separator === -1 ? argument : argument.slice(0, separator);
+    const value = separator === -1 ? undefined : argument.slice(separator + 1);
+    if (ownNames.has(name)) {
+      if (name === "--cdn" && (value === undefined || value === "true" || value === "false")) customCdn = undefined;
+      if (name === "--cdn" && value !== undefined && value !== "true" && value !== "false") {
+        customCdn = value;
+        ownArgs.push("--cdn");
+      } else if (name !== "--lock-file" && value !== undefined) {
+        if (value !== "true" && value !== "false") throw new TypeError(`Invalid boolean option: ${argument}`);
+        const canonicalName = name === "-r" ? "reload" : name === "-h" ? "help" : name.slice(2);
+        ownArgs.push(value === "true" ? `--${canonicalName}` : `--no-${canonicalName}`);
+      } else {
+        ownArgs.push(argument);
+        if (name === "--lock-file" && value === undefined) {
+          const next = args[++index];
+          if (!next || next.startsWith("-")) throw new TypeError(`${name} requires a path`);
+          ownArgs.push(next);
+        }
+      }
+    } else if (name.startsWith("--no-") && ownNames.has(`--${name.slice(5)}`)) {
+      if (name === "--no-cdn") customCdn = undefined;
+      ownArgs.push(argument);
+    } else {
+      nodeFlags.push(argument);
+      if (value === undefined && (requiredNodeValues ??= nodeValueOptions()).has(name)) {
+        const next = args[++index];
+        if (next === undefined) throw new TypeError(`${name} requires a value`);
+        nodeFlags.push(next);
       }
     }
   }
-  // Script args = everything after the target in raw argv
-  scriptArgs = allArgs.slice(targetIdx + 1);
+  return { ownArgs, nodeFlags, customCdn, target: undefined, scriptArgs: [] };
 }
+
+const { ownArgs, nodeFlags, customCdn, target, scriptArgs } = splitArguments(process.argv.slice(2));
+const { values } = parseArgs({ args: ownArgs, options: ownOptions, strict: true, allowNegative: true });
+const cdnBase = values.cdn ? customCdn ?? DEFAULT_CDN : undefined;
 
 // Show help if --help is passed without a target, or no args at all.
 if ((values.help && !target) || (!target && !values["clear-cache"])) {
@@ -141,62 +150,37 @@ if (values["clear-cache"]) {
   process.exit(0);
 }
 
-// Build node command:
-//   node --import register-hooks <target-or-entry> [script-args]
-let nodeArgs: string[];
-
-if (isHttpUrl(target!)) {
-  // Pass any existing file as the entry point. The resolve hook (triggered by
-  // URL_IMPORT_MAIN env var) redirects entry-point resolution to the HTTP URL,
-  // making the remote module the true main module (import.meta.main === true).
-  // We reuse the register-hooks file since it's guaranteed to exist.
-  const entryPlaceholder = fileURLToPath(registerImportMetaUrl);
-
-  // No `--` separator: script args come after the entry positional, so Node
-  // already treats them as script args (even flag-like ones). Adding `--`
-  // would leak a stray `--` into the target's process.argv.
-  nodeArgs = [
-    "--import",
-    registerImportMetaUrl,
-    ...nodeFlags,
-    entryPlaceholder,
-    ...scriptArgs,
-  ];
-} else {
-  nodeArgs = [
-    "--import",
-    registerImportMetaUrl,
-    ...nodeFlags,
-    target!,
-    ...scriptArgs,
-  ];
-}
+// Use the registration file as a guaranteed placeholder for HTTP entries.
+// URL_IMPORT_MAIN redirects it in resolve, preserving import.meta.main.
+const remoteTarget = isHttpUrl(target!);
+const entry = remoteTarget ? fileURLToPath(registerImportMetaUrl) : target!;
+// The separator belongs before the entry so flag-like filenames are safe;
+// script arguments remain after the entry and receive no extra separator.
+const nodeArgs = ["--import", registerImportMetaUrl, ...nodeFlags, "--", entry, ...scriptArgs];
 
 // Pass our flags to the child process via environment variables.
 const env: Record<string, string | undefined> = { ...process.env };
 
-if (isHttpUrl(target!)) {
-  env.URL_IMPORT_MAIN = target;
-}
-if (values.tmp) {
-  env.URL_IMPORT_TMP = "1";
-}
-if (values.reload) {
-  env.URL_IMPORT_RELOAD = "1";
+// A nested CLI invocation must not accidentally execute its parent's remote entry.
+delete env.URL_IMPORT_MAIN;
+if (remoteTarget) env.URL_IMPORT_MAIN = target;
+for (const [option, variable] of [["tmp", "URL_IMPORT_TMP"], ["reload", "URL_IMPORT_RELOAD"], ["frozen", "URL_IMPORT_FROZEN"]] as const) {
+  if (values[option] !== undefined) env[variable] = values[option] ? "1" : "0";
 }
 if (values["lock-file"]) {
-  env.URL_IMPORT_LOCK = resolve(values["lock-file"] as string);
+  env.URL_IMPORT_LOCK = resolve(values["lock-file"]);
 } else if (values.lock) {
   env.URL_IMPORT_LOCK = resolve("deno.lock");
+} else if (values.lock === false) {
+  delete env.URL_IMPORT_LOCK;
 }
-if (values.frozen) {
-  env.URL_IMPORT_FROZEN = "1";
-  if (!env.URL_IMPORT_LOCK) {
-    env.URL_IMPORT_LOCK = resolve("deno.lock");
-  }
-}
+if (env.URL_IMPORT_FROZEN === "1" && !env.URL_IMPORT_LOCK) env.URL_IMPORT_LOCK = resolve("deno.lock");
 if (cdnBase) {
-  env.URL_IMPORT_CDN = cdnBase;
+  const parsed = new URL(cdnBase);
+  if (!isHttpUrl(parsed.href) || parsed.search || parsed.hash) throw new TypeError("The CDN base must be an HTTP(S) URL without query or fragment");
+  env.URL_IMPORT_CDN = parsed.href.endsWith("/") ? parsed.href : parsed.href + "/";
+} else if (values.cdn === false) {
+  delete env.URL_IMPORT_CDN;
 }
 
 const result = spawnSync(process.execPath, nodeArgs, {
