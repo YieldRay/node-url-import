@@ -2,7 +2,7 @@ import process from "node:process";
 import { decodeModuleSource, readCache, writeCache } from "./cache.ts";
 import type { CacheEntry } from "./cache.ts";
 import { NAME, MAX_REDIRECTS } from "./constants.ts";
-import { verifyLock, recordRedirect, isLockEnabled } from "./lock.ts";
+import { verifyModuleLock } from "./lock.ts";
 import { downloadAdd, downloadBegin, downloadDone } from "./progress.ts";
 
 const reload: boolean = process.env.URL_IMPORT_RELOAD === "1";
@@ -21,10 +21,7 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
   const cached = reload ? null : readCache(url);
 
   if (cached) {
-    if (isLockEnabled()) {
-      recordRedirect(url, cached.finalUrl);
-      verifyLock(cached.finalUrl, cached.source);
-    }
+    verifyModuleLock(cached);
     return cached;
   }
 
@@ -64,14 +61,10 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
       const contentType = res.headers.get("content-type") || "application/javascript";
       const source = decodeModuleSource(new Uint8Array(await res.arrayBuffer()), currentUrl, contentType);
 
+      const entry = { source, contentType, url, finalUrl: currentUrl, redirectChain };
+      verifyModuleLock(entry);
       writeCache(redirectChain, source, contentType);
-
-      if (isLockEnabled()) {
-        recordRedirect(url, currentUrl);
-        verifyLock(currentUrl, source);
-      }
-
-      return { source, contentType, url, finalUrl: currentUrl, redirectChain };
+      return entry;
     }
 
     throw new Error(`Too many redirects fetching ${url}`);

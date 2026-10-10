@@ -15,6 +15,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { readCache } from "./cache.ts";
 import type { CacheEntry, ModuleSource } from "./cache.ts";
+import { verifyModuleLock } from "./lock.ts";
 
 // Lazy-initialized worker
 let worker: Worker | null = null;
@@ -65,7 +66,10 @@ export function fetchModuleSync(url: string): CacheEntry {
   const reload = process.env.URL_IMPORT_RELOAD === "1";
   if (!reload) {
     const cached = readCache(url);
-    if (cached) return cached;
+    if (cached) {
+      verifyModuleLock(cached);
+      return cached;
+    }
   }
 
   // Cache miss — delegate to worker and block

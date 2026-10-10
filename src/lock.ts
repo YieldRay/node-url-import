@@ -1,146 +1,201 @@
 /**
- * Lock file support for node-url-import.
- *
- * Uses the same format as Deno's lock file:
- * {
- *   "version": "5",
- *   "redirects": {
- *     "https://raw.esm.sh/armor64/dist/cli.js": "https://raw.esm.sh/armor64@0.1.0/dist/cli.js"
- *   },
- *   "remote": {
- *     "https://raw.esm.sh/armor64@0.1.0/dist/cli.js": "<sha256-hex>"
- *   }
- * }
- *
- * The lock file is only read/written when explicitly enabled via --lock.
- * With --frozen, any missing or mismatched entry causes an error.
+ * Deno lock v5 support: source hashes and hop-by-hop redirect records.
+ * Enabled only by URL_IMPORT_LOCK; frozen mode rejects missing or changed
+ * records. Unrelated npm, jsr and workspace sections are preserved on writes.
  */
 
 import process from "node:process";
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import type { ModuleSource } from "./cache.ts";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { writeFileAtomicSync } from "./cache.ts";
+import type { CacheEntry, ModuleSource } from "./cache.ts";
 
 const LOCK_VERSION = "5";
+const lockPath = process.env.URL_IMPORT_LOCK ? resolve(process.env.URL_IMPORT_LOCK) : null;
+const frozen = process.env.URL_IMPORT_FROZEN === "1";
+const lockWait = new Int32Array(new SharedArrayBuffer(4));
 
 interface LockFileData {
   version: string;
   redirects: Record<string, string>;
   remote: Record<string, string>;
+  [key: string]: unknown;
 }
-
-const lockPath: string | null = process.env.URL_IMPORT_LOCK || null;
-const frozen: boolean = process.env.URL_IMPORT_FROZEN === "1";
-
-let lockData: LockFileData | null = null;
-let dirty = false;
 
 export function hashSource(source: ModuleSource): string {
   return createHash("sha256").update(source).digest("hex");
 }
 
-function loadLockFile(): LockFileData {
-  if (lockData) return lockData;
-
-  if (lockPath && existsSync(lockPath)) {
-    try {
-      const raw = readFileSync(lockPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.remote === "object") {
-        lockData = {
-          version: parsed.version || LOCK_VERSION,
-          redirects: parsed.redirects || {},
-          remote: parsed.remote,
-        };
-      } else {
-        lockData = { version: LOCK_VERSION, redirects: {}, remote: {} };
-      }
-    } catch {
-      lockData = { version: LOCK_VERSION, redirects: {}, remote: {} };
-    }
-  } else {
-    lockData = { version: LOCK_VERSION, redirects: {}, remote: {} };
-  }
-
-  return lockData;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function flushLockFile(): void {
-  if (!lockPath || !dirty || !lockData) return;
-  // Output sections in Deno's order: version, redirects (if non-empty), remote
-  const out: Record<string, unknown> = { version: lockData.version };
-  if (Object.keys(lockData.redirects).length > 0) {
-    out.redirects = lockData.redirects;
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function loadLockFile(path: string): LockFileData {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return { version: LOCK_VERSION, redirects: {}, remote: {} };
+    }
+    throw error;
   }
-  out.remote = lockData.remote;
-  const json = JSON.stringify(out, null, 2) + "\n";
-  writeFileSync(lockPath, json, "utf-8");
-  dirty = false;
+  const data: unknown = JSON.parse(text);
+  if (!isRecord(data) || (data.version !== undefined && typeof data.version !== "string") ||
+    (data.redirects !== undefined && !isStringRecord(data.redirects)) ||
+    (data.remote !== undefined && !isStringRecord(data.remote))) {
+    throw new Error(`Invalid lock file: ${path}`);
+  }
+  return {
+    ...data,
+    version: typeof data.version === "string" ? data.version : LOCK_VERSION,
+    redirects: isStringRecord(data.redirects) ? data.redirects : {},
+    remote: isStringRecord(data.remote) ? data.remote : {},
+  };
+}
+
+/** Only reclaim a known owner after its process has exited; never steal a live lock. */
+function removeDeadOwner(directory: string): void {
+  try {
+    const owners = readdirSync(directory);
+    if (owners.length !== 1) return;
+    const owner = owners[0]!;
+    const match = /^owner-(\d+)-/.exec(owner);
+    if (!match) return;
+    try {
+      process.kill(Number(match[1]), 0);
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) return;
+    }
+    // Unlink the specific owner first. Competing reclaimers cannot then remove
+    // a newly acquired directory because only one can unlink this owner file.
+    unlinkSync(join(directory, owner));
+    rmdirSync(directory);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTEMPTY"))) throw error;
+  }
+}
+
+/**
+ * mkdir is the cross-process exclusion point. The transaction contains only
+ * synchronous filesystem operations, so a worker cannot yield while owning it.
+ * A bounded wait also reports abandoned empty locks instead of hanging forever.
+ */
+function acquireLock(path: string): () => void {
+  const directory = join(realpathSync(dirname(path)), `${basename(path)}.lock`);
+  const owner = join(directory, `owner-${process.pid}-${randomUUID()}`);
+  const deadline = Date.now() + 15_000;
+  while (true) {
+    try {
+      mkdirSync(directory, { mode: 0o700 });
+      try {
+        writeFileSync(owner, "", { flag: "wx", mode: 0o600 });
+      } catch (error) {
+        rmdirSync(directory);
+        throw error;
+      }
+      return () => {
+        unlinkSync(owner);
+        rmdirSync(directory);
+      };
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting to update lock file ${path}`);
+      removeDeadOwner(directory);
+      Atomics.wait(lockWait, 0, 0, 10);
+    }
+  }
+}
+
+/** Reload inside the filesystem lock so main-thread and worker snapshots cannot diverge. */
+function updateLock(update: (data: LockFileData) => void): void {
+  if (!lockPath) return;
+  if (frozen) {
+    update(loadLockFile(lockPath));
+    return;
+  }
+
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const release = acquireLock(lockPath);
+  try {
+    const data = loadLockFile(lockPath);
+    const previous = JSON.stringify(data);
+    update(data);
+    if (JSON.stringify(data) !== previous) {
+      const { version, redirects, remote, ...preserved } = data;
+      const output = { version, ...(Object.keys(redirects).length ? { redirects } : {}), remote, ...preserved };
+      writeFileAtomicSync(lockPath, JSON.stringify(output, null, 2) + "\n");
+    }
+  } finally {
+    release();
+  }
+}
+
+function requireMutableLock(): void {
+  if (frozen) throw new Error("The lockfile is out of date. Rerun with `--frozen=false` to update it.");
+}
+
+function normalizeUrl(url: string): string {
+  const parsed = new URL(url);
+  parsed.hash = "";
+  return parsed.href;
+}
+
+function verifySource(data: LockFileData, url: string, source: ModuleSource): void {
+  const key = normalizeUrl(url);
+  const actual = hashSource(source);
+  const expected = data.remote[key];
+  if (expected !== undefined && expected !== actual) {
+    throw new Error(`Integrity check failed for ${key}\nActual: ${actual}\nExpected: ${expected}`);
+  }
+  if (expected === undefined) {
+    requireMutableLock();
+    data.remote[key] = actual;
+  }
+}
+
+function verifyRedirect(data: LockFileData, from: string, to: string): void {
+  const source = normalizeUrl(from);
+  const target = normalizeUrl(to);
+  const expected = data.redirects[source];
+  if (source === target) {
+    if (expected !== undefined) {
+      requireMutableLock();
+      delete data.redirects[source];
+    }
+  } else if (expected !== target) {
+    requireMutableLock();
+    data.redirects[source] = target;
+  }
 }
 
 export function isLockEnabled(): boolean {
   return lockPath !== null;
 }
 
-/**
- * Record a redirect in the lock file (original URL → final URL).
- * Only records when they differ.
- */
-export function recordRedirect(from: string, to: string): void {
-  if (!lockPath || from === to) return;
-
-  const data = loadLockFile();
-  const existing = data.redirects[from];
-
-  if (existing === to) return;
-
-  if (frozen) {
-    throw new Error(
-      `The lockfile is out of date. Rerun with \`--frozen=false\` to update it.`,
-    );
-  }
-
-  data.redirects[from] = to;
-  dirty = true;
-  flushLockFile();
+/** Verify a fetched module's source against its recorded SHA-256 hash. */
+export function verifyLock(url: string, source: ModuleSource): void {
+  updateLock((data) => verifySource(data, url, source));
 }
 
-/**
- * Verify a fetched module's source against the lock file.
- */
-export function verifyLock(url: string, source: ModuleSource): void {
-  if (!lockPath) return;
+/** Record or verify one redirect hop, keeping Deno's original-to-next layout. */
+export function recordRedirect(from: string, to: string): void {
+  updateLock((data) => verifyRedirect(data, from, to));
+}
 
-  const data = loadLockFile();
-  const hash = hashSource(source);
-  const existing = data.remote[url];
-
-  if (existing) {
-    if (existing !== hash) {
-      throw new Error(
-        `Integrity check failed for remote specifier. The source code is invalid, as it does not match the expected hash in the lock file.\n` +
-          `\n` +
-          `  Specifier: ${url}\n` +
-          `  Actual: ${hash}\n` +
-          `  Expected: ${existing}\n` +
-          `\n` +
-          `This could be caused by:\n` +
-          `  * the lock file may be corrupt\n` +
-          `  * the source itself may be corrupt\n` +
-          `\n` +
-          `Investigate the lockfile; delete it to regenerate the lockfile or --reload to reload the source code from the server.`,
-      );
+/** Check the source and every redirect as one transaction before publishing a cache entry. */
+export function verifyModuleLock(entry: CacheEntry): void {
+  updateLock((data) => {
+    verifySource(data, entry.finalUrl, entry.source);
+    for (let index = 0; index < entry.redirectChain.length - 1; index++) {
+      verifyRedirect(data, entry.redirectChain[index]!, entry.redirectChain[index + 1]!);
     }
-    return;
-  }
-
-  if (frozen) {
-    throw new Error(
-      `The lockfile is out of date. Rerun with \`--frozen=false\` to update it.`,
-    );
-  }
-
-  data.remote[url] = hash;
-  dirty = true;
-  flushLockFile();
+    verifyRedirect(data, entry.finalUrl, entry.finalUrl);
+  });
 }
