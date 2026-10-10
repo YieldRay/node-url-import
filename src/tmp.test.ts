@@ -1,305 +1,155 @@
-import { describe, it, afterEach } from "node:test";
+import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import process from "node:process";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { existsSync } from "node:fs";
-import { readFile, rm, writeFile, mkdir } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+import { extname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { urlToTmpPath, tmpPathToUrl, writeTmpFile } from "./tmp.ts";
 
-const TMP_ROOT = join(tmpdir(), "node-url-import");
-
-describe("tmp: urlToTmpPath", () => {
-  it("should map https URL with extension to tmp path", () => {
-    const result = urlToTmpPath(
-      "https://esm.sh/v135/pkg@1.0.0/script.js",
-      "application/javascript",
-    );
-    assert.equal(
-      result,
-      join(TMP_ROOT, "https", "esm.sh", "v135", "pkg@1.0.0", "script.js"),
-    );
-  });
-
-  it("should map http URL with extension to tmp path", () => {
-    const result = urlToTmpPath(
-      "http://example.com/lib/index.mjs",
-      "application/javascript",
-    );
-    assert.equal(
-      result,
-      join(TMP_ROOT, "http", "example.com", "lib", "index.mjs"),
-    );
-  });
-
-  it("should handle URL with nested path", () => {
-    const result = urlToTmpPath(
-      "https://cdn.example.com/a/b/c/d.js",
-      "application/javascript",
-    );
-    assert.equal(
-      result,
-      join(TMP_ROOT, "https", "cdn.example.com", "a", "b", "c", "d.js"),
-    );
-  });
-
-  it("should handle URL with port", () => {
-    const result = urlToTmpPath(
-      "https://localhost:3000/script.js",
-      "application/javascript",
-    );
-    assert.equal(
-      result,
-      join(TMP_ROOT, "https", "localhost:3000", "script.js"),
-    );
-  });
-
-  it("should append index.mjs for extensionless JS URL", () => {
-    const result = urlToTmpPath(
-      "https://esm.sh/ms@2.1.3",
-      "application/javascript",
-    );
-    assert.equal(
-      result,
-      join(TMP_ROOT, "https", "esm.sh", "ms@2.1.3", "index.mjs"),
-    );
-  });
-
-  it("should append index.ts for TypeScript content type", () => {
-    const result = urlToTmpPath(
-      "https://deno.land/x/mod@1.0.0",
-      "text/typescript",
-    );
-    assert.equal(
-      result,
-      join(TMP_ROOT, "https", "deno.land", "x", "mod@1.0.0", "index.ts"),
-    );
-  });
-
-  it("should append index.json for JSON content type", () => {
-    const result = urlToTmpPath(
-      "https://api.example.com/config",
-      "application/json",
-    );
-    assert.equal(
-      result,
-      join(TMP_ROOT, "https", "api.example.com", "config", "index.json"),
-    );
-  });
-
-  it("should append index.mjs when no content type provided", () => {
-    const result = urlToTmpPath("https://esm.sh/pkg@1.0.0");
-    assert.equal(
-      result,
-      join(TMP_ROOT, "https", "esm.sh", "pkg@1.0.0", "index.mjs"),
-    );
-  });
-
-  it("should preserve real /index.mjs in URL path", () => {
-    const result = urlToTmpPath(
-      "https://cdn.example.com/lib/index.mjs",
-      "application/javascript",
-    );
-    assert.equal(
-      result,
-      join(TMP_ROOT, "https", "cdn.example.com", "lib", "index.mjs"),
-    );
-  });
-
-  it("should preserve .ts extension without adding index", () => {
-    const result = urlToTmpPath(
-      "https://deno.land/x/mod@1.0.0/main.ts",
-      "text/typescript",
-    );
-    assert.equal(
-      result,
-      join(TMP_ROOT, "https", "deno.land", "x", "mod@1.0.0", "main.ts"),
-    );
-  });
+const server = createServer((request, response) => {
+  response.setHeader("Content-Type", "application/javascript");
+  const sources: Record<string, string> = {
+    "/pkg": 'export { default } from "./dep.mjs";',
+    "/dep.mjs": 'export default "correct";',
+    "/pkg/dep.mjs": 'export default "wrong";',
+    "/pkg/index.mjs": 'export default "index";',
+    "/npm.mjs": 'import ts from "npm:typescript"; console.log(JSON.stringify({ version: ts.version, url: import.meta.url, main: import.meta.main }));',
+    "/bare.mjs": 'import ts from "typescript"; export default ts.version;',
+    "/main.cjs": 'module.exports = require("./dep.cjs");',
+    "/dep.cjs": 'module.exports = 42;',
+  };
+  response.end(sources[request.url!] ?? `export default ${JSON.stringify(request.url)};`);
 });
+let baseUrl: string;
+let workspace: string;
 
-describe("tmp: tmpPathToUrl", () => {
-  it("should reverse-map tmp path with extension to https URL", () => {
-    const tmpPath = join(
-      TMP_ROOT,
-      "https",
-      "esm.sh",
-      "v135",
-      "pkg@1.0.0",
-      "script.js",
-    );
-    const result = tmpPathToUrl(tmpPath);
-    assert.equal(result, "https://esm.sh/v135/pkg@1.0.0/script.js");
-  });
-
-  it("should reverse-map file:// URL to https URL", () => {
-    const fileUrl = `file://${join(TMP_ROOT, "https", "esm.sh", "pkg", "index.mjs")}`;
-    const result = tmpPathToUrl(fileUrl);
-    // index.mjs is NOT stripped — returned URL includes it
-    assert.equal(result, "https://esm.sh/pkg/index.mjs");
-  });
-
-  it("should reverse-map http scheme", () => {
-    const tmpPath = join(TMP_ROOT, "http", "example.com", "lib.js");
-    const result = tmpPathToUrl(tmpPath);
-    assert.equal(result, "http://example.com/lib.js");
-  });
-
-  it("should return null for path outside tmp root", () => {
-    const result = tmpPathToUrl("/some/other/path/file.js");
-    assert.equal(result, null);
-  });
-
-  it("should return null for malformed path under tmp root (no host)", () => {
-    const result = tmpPathToUrl(join(TMP_ROOT, "https"));
-    assert.equal(result, null);
-  });
-
-  it("should preserve index.mjs in reverse mapping (no stripping)", () => {
-    const tmpPath = join(
-      TMP_ROOT,
-      "https",
-      "esm.sh",
-      "ms@2.1.3",
-      "index.mjs",
-    );
-    const result = tmpPathToUrl(tmpPath);
-    // Not stripped — relative imports resolve against same base directory
-    assert.equal(result, "https://esm.sh/ms@2.1.3/index.mjs");
-  });
-
-  it("should preserve real /index.mjs from URL path", () => {
-    const tmpPath = join(
-      TMP_ROOT,
-      "https",
-      "cdn.example.com",
-      "lib",
-      "index.mjs",
-    );
-    const result = tmpPathToUrl(tmpPath);
-    assert.equal(result, "https://cdn.example.com/lib/index.mjs");
-  });
-
-  it("should roundtrip: urlToTmpPath → tmpPathToUrl for URL with extension", () => {
-    const original = "https://esm.sh/v135/lodash-es@4.17.21/es2022/add.js";
-    const tmpPath = urlToTmpPath(original, "application/javascript");
-    const recovered = tmpPathToUrl(tmpPath);
-    assert.equal(recovered, original);
-  });
-
-  it("should roundtrip correctly for extensionless URL (includes index.mjs)", () => {
-    const original = "https://esm.sh/ms@2.1.3";
-    const tmpPath = urlToTmpPath(original, "application/javascript");
-    const recovered = tmpPathToUrl(tmpPath);
-    // Recovered URL includes /index.mjs — this is fine because
-    // relative imports resolve against the same base directory
-    assert.equal(recovered, "https://esm.sh/ms@2.1.3/index.mjs");
-
-    // Verify: relative import resolves the same from both URLs
-    const fromOriginal = new URL("./es2022/ms.mjs", original + "/").href;
-    const fromRecovered = new URL("./es2022/ms.mjs", recovered).href;
-    assert.equal(fromOriginal, fromRecovered);
-  });
+before(async () => {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  baseUrl = `http://127.0.0.1:${address.port}`;
 });
-
-describe("tmp: writeTmpFile", () => {
-  const testDir = join(TMP_ROOT, "__test__", "write-test");
-  const testPath = join(testDir, "file.js");
-
-  afterEach(async () => {
-    await rm(join(TMP_ROOT, "__test__"), { recursive: true, force: true });
-  });
-
-  it("should write file and create parent directories", async () => {
-    writeTmpFile(testPath, "export default 42;\n");
-    assert.ok(existsSync(testPath));
-    const content = await readFile(testPath, "utf-8");
-    assert.equal(content, "export default 42;\n");
-  });
+after(async () => {
+  server.closeAllConnections();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 });
+beforeEach(() => { workspace = mkdtempSync(join(tmpdir(), "node-url-import-tmp-test-")); });
+afterEach(() => { rmSync(workspace, { recursive: true, force: true }); });
 
-describe("tmp: CLI --tmp smoke test", () => {
-  const fixtureDir = join(tmpdir(), "node-url-import-test-fixtures");
-
-  afterEach(async () => {
-    await rm(join(TMP_ROOT, "https", "esm.sh"), {
-      recursive: true,
-      force: true,
+function run(args: string[], extraEnv: Record<string, string> = {}) {
+  return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, args, {
+      env: { ...process.env, DENO_DIR: join(workspace, "deno"), TMPDIR: workspace, URL_IMPORT_TMP: "1", ...extraEnv },
+      stdio: ["ignore", "pipe", "pipe"], timeout: 15_000,
     });
-    await rm(fixtureDir, { recursive: true, force: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+const registerUrl = new URL("./register-hooks.ts", import.meta.url).href;
+
+describe("tmp URL identity", () => {
+  it("roundtrips exact URLs including directory, query and fragment semantics", () => {
+    const urls = [
+      "https://modules.test/", "https://modules.test/pkg", "https://modules.test/pkg/",
+      "https://modules.test/pkg/index.mjs", "https://modules.test/variant.mjs?target=node",
+      "https://modules.test/variant.mjs?target=es2022", "https://modules.test/variant.mjs#first",
+      "https://modules.test/variant.mjs#second", "http://localhost:8080/a%20b/mod.mts",
+    ];
+    const paths = urls.map((url) => urlToTmpPath(url, "application/javascript"));
+    assert.equal(new Set(paths).size, urls.length);
+    for (let index = 0; index < urls.length; index++) {
+      assert.equal(tmpPathToUrl(paths[index]!), urls[index]);
+      assert.equal(tmpPathToUrl(pathToFileURL(paths[index]!).href), urls[index]);
+    }
   });
 
-  it("should write fetched module to tmp dir and execute successfully", async () => {
-    await mkdir(fixtureDir, { recursive: true });
-    const scriptPath = join(fixtureDir, "smoke-ms.mjs");
-    await writeFile(
-      scriptPath,
-      `import ms from "https://esm.sh/ms@2.1.3";\nconsole.log(ms(60000));\n`,
-      "utf-8",
-    );
-
-    const result = spawnSync(
-      process.execPath,
-      ["src/cli.ts", "--tmp", scriptPath],
-      {
-        cwd: process.cwd(),
-        env: { ...process.env },
-        encoding: "utf-8",
-        timeout: 30_000,
-      },
-    );
-
-    assert.equal(
-      result.status,
-      0,
-      `CLI exited with ${result.status}\nstderr: ${result.stderr}`,
-    );
-    assert.ok(
-      result.stdout.includes("1m"),
-      `Expected "1m" in stdout, got: ${result.stdout}`,
-    );
-
-    const tmpHttpsDir = join(TMP_ROOT, "https", "esm.sh");
-    assert.ok(
-      existsSync(tmpHttpsDir),
-      `Expected tmp dir to exist: ${tmpHttpsDir}`,
-    );
+  it("uses native extensions for TypeScript, JSON and binary modules", () => {
+    for (const [url, type, extension] of [
+      ["https://modules.test/types", "text/typescript", ".ts"],
+      ["https://modules.test/json", "application/json", ".json"],
+      ["https://modules.test/wasm", "application/wasm", ".wasm"],
+      ["https://modules.test/main.cts", "text/typescript", ".cts"],
+    ]) {
+      assert.equal(extname(urlToTmpPath(url!, type!)), extension);
+    }
   });
 
-  it("should write transitive deps to tmp dir", async () => {
-    await mkdir(fixtureDir, { recursive: true });
-    const scriptPath = join(fixtureDir, "smoke-lodash.mjs");
-    await writeFile(
-      scriptPath,
-      `import { add } from "https://esm.sh/lodash-es@4.17.21";\nconsole.log(add(2, 3));\n`,
-      "utf-8",
-    );
+  it("can map a module URL and a descendant without file-directory collisions", () => {
+    const parent = urlToTmpPath("https://modules.test/folder.mjs");
+    const child = urlToTmpPath("https://modules.test/folder.mjs/child.mjs");
+    writeTmpFile(parent, "export default 1;");
+    writeTmpFile(child, "export default 2;");
+    assert.equal(readFileSync(parent, "utf8"), "export default 1;");
+    assert.equal(readFileSync(child, "utf8"), "export default 2;");
+  });
 
-    const result = spawnSync(
-      process.execPath,
-      ["src/cli.ts", "--tmp", scriptPath],
-      {
-        cwd: process.cwd(),
-        env: { ...process.env },
-        encoding: "utf-8",
-        timeout: 30_000,
-      },
-    );
+  it("does not interpret unregistered local files as remote modules", () => {
+    assert.equal(tmpPathToUrl(join(workspace, "https", "modules.test", "mod.mjs")), null);
+    assert.equal(tmpPathToUrl("file:///unrelated/mod.mjs"), null);
+  });
 
-    assert.equal(
-      result.status,
-      0,
-      `CLI exited with ${result.status}\nstderr: ${result.stderr}`,
-    );
-    assert.ok(
-      result.stdout.includes("5"),
-      `Expected "5" in stdout, got: ${result.stdout}`,
-    );
+  it("writes text and binary modules without changing their bytes", () => {
+    const textPath = join(workspace, "nested", "module.mjs");
+    const binaryPath = join(workspace, "nested", "module.wasm");
+    const bytes = Uint8Array.from([0, 128, 255]);
+    writeTmpFile(textPath, "export default 42;");
+    writeTmpFile(binaryPath, bytes);
+    assert.equal(readFileSync(textPath, "utf8"), "export default 42;");
+    assert.deepEqual([...readFileSync(binaryPath)], [...bytes]);
+  });
+});
 
-    const tmpHttpsDir = join(TMP_ROOT, "https", "esm.sh");
-    assert.ok(
-      existsSync(tmpHttpsDir),
-      `Expected tmp dir to exist: ${tmpHttpsDir}`,
-    );
+describe("tmp module loading", () => {
+  it("preserves extensionless relative import bases", async () => {
+    const result = await run(["--import", registerUrl, "--eval", `import(${JSON.stringify(`${baseUrl}/pkg`)}).then(m => console.log(m.default));`]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "correct");
+  });
+
+  it("does not merge query, fragment or synthetic index module identities", async () => {
+    const urls = ["/variant.mjs?q=1", "/variant.mjs?q=2", "/pkg", "/pkg/index.mjs"].map((path) => baseUrl + path);
+    const result = await run(["--import", registerUrl, "--eval", `
+      (async () => {
+        const values = [];
+        for (const url of ${JSON.stringify(urls)}) values.push((await import(url)).default);
+        const first = await import(${JSON.stringify(`${baseUrl}/variant.mjs#first`)});
+        const second = await import(${JSON.stringify(`${baseUrl}/variant.mjs#second`)});
+        console.log(JSON.stringify({ values, separate: first !== second }));
+      })();
+    `], { URL_IMPORT_RELOAD: "1" });
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output.values, ["/variant.mjs?q=1", "/variant.mjs?q=2", "correct", "index"]);
+    assert.equal(output.separate, true);
+  });
+
+  it("writes the actual CLI main module to a local temporary file", async () => {
+    const result = await run([fileURLToPath(new URL("./cli.ts", import.meta.url)), "--tmp", `${baseUrl}/npm.mjs`]);
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(typeof output.version, "string");
+    assert.equal(output.main, true);
+    assert.ok(output.url.startsWith("file:"));
+    assert.ok(existsSync(fileURLToPath(output.url)));
+  });
+
+  it("resolves local bare packages from the project rather than the tmp directory", async () => {
+    const result = await run(["--import", registerUrl, "--eval", `import(${JSON.stringify(`${baseUrl}/bare.mjs`)}).then(m => console.log(JSON.stringify(m.default)));`]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(typeof JSON.parse(result.stdout), "string");
+  });
+
+  it("supports CommonJS relative requires", async () => {
+    const result = await run(["--import", registerUrl, "--eval", `console.log(require(${JSON.stringify(`${baseUrl}/main.cjs`)}));`]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(Number(result.stdout), 42);
   });
 });

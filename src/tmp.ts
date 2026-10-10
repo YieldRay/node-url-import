@@ -1,123 +1,79 @@
 /**
- * --tmp mode: write fetched remote modules to a human-readable tmp directory
- * structure that mirrors the URL, so modules see themselves as local files.
+ * --tmp mode: write remote modules beneath a readable, per-process directory.
  *
- * Example:
- *   https://esm.sh/v135/pkg@1.0.0/script.js
- *   → /tmp/node-url-import/https/esm.sh/v135/pkg@1.0.0/script.js
+ *   https://esm.sh/pkg/mod.ts
+ *   → <tmp>/node-url-import/session-.../https/esm.sh/pkg/mod.ts/module-<id>.ts
  *
- * URLs without a recognised file extension (e.g. https://esm.sh/ms@2.1.3)
- * get an `index.<ext>` appended so they become directories, avoiding
- * collisions with child paths (e.g. .../ms@2.1.3/es2022/ms.mjs).
- *
- * The reverse mapping (tmpPathToUrl) does NOT strip this index file.
- * Instead it returns e.g. `https://esm.sh/ms@2.1.3/index.mjs`, which
- * is fine because it's only used to resolve relative imports — and
- * `new URL("./foo.js", "https://x/bar/index.mjs")` gives the same
- * base directory as `new URL("./foo.js", "https://x/bar/")`.
- *
- * This is CLI-only. The loader never enables this on its own — it is
- * activated via the URL_IMPORT_TMP=1 environment variable set by the CLI.
+ * Each URL, including query and fragment, gets its own module file. The reverse
+ * map retains the exact URL rather than reconstructing it from a synthetic file
+ * name, so extensionless URLs keep their original relative-import base.
+ * Activated by URL_IMPORT_TMP=1, normally set by the CLI's --tmp option.
  */
 
 import process from "node:process";
 import { tmpdir } from "node:os";
-import { join, dirname, extname } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join, dirname, extname, resolve } from "node:path";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NAME } from "./constants.ts";
+import { writeFileAtomicSync } from "./cache.ts";
 import type { ModuleSource } from "./cache.ts";
 
-/** Root directory for tmp files: <system-tmp>/node-url-import/ */
-const TMP_ROOT = join(tmpdir(), NAME);
+/** Whether readable temporary module files are enabled. */
+export const tmpEnabled = process.env.URL_IMPORT_TMP === "1";
+const sourceUrls = new Map<string, string>();
+const KNOWN_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx", ".json", ".wasm"]);
+let temporaryRoot: string | undefined;
 
-/** Whether --tmp mode is active. */
-export const tmpEnabled: boolean = process.env.URL_IMPORT_TMP === "1";
+function getTemporaryRoot(): string {
+  if (!temporaryRoot) {
+    const parent = join(tmpdir(), NAME);
+    mkdirSync(parent, { recursive: true });
+    temporaryRoot = mkdtempSync(join(parent, "session-"));
+  }
+  return temporaryRoot;
+}
 
-/** File extensions recognised as "has an extension" — no index.<ext> needed. */
-const KNOWN_EXTS = new Set([
-  ".js",
-  ".mjs",
-  ".cjs",
-  ".ts",
-  ".mts",
-  ".cts",
-  ".tsx",
-  ".jsx",
-  ".json",
-  ".wasm",
-]);
-
-/** Map content-type to a file extension for extensionless URLs. */
-function extForContentType(contentType: string): string {
-  const ct = contentType.toLowerCase();
-  if (ct.includes("text/typescript") || ct.includes("application/typescript"))
-    return ".ts";
-  if (ct.includes("application/json")) return ".json";
-  if (ct.includes("application/wasm")) return ".wasm";
-  // Default to .mjs for JS/unknown — .mjs is unambiguous ESM for Node.
+/** Choose an unambiguous Node file extension for an extensionless remote URL. */
+function extensionForContentType(contentType: string): string {
+  const type = contentType.toLowerCase();
+  if (type.includes("text/typescript") || type.includes("application/typescript")) return ".ts";
+  if (type.includes("application/json")) return ".json";
+  if (type.includes("application/wasm")) return ".wasm";
+  // .mjs keeps JS modules ESM regardless of package.json files above the tmp root.
   return ".mjs";
 }
 
-/**
- * Convert an HTTP(S) URL to a local tmp file path. Extensionless URLs get an
- * `index.<ext>` suffix (see file header for why).
- *
- *   https://esm.sh/v135/pkg@1.0.0/script.js → <TMP_ROOT>/https/esm.sh/v135/pkg@1.0.0/script.js
- *   https://esm.sh/ms@2.1.3 (js)            → <TMP_ROOT>/https/esm.sh/ms@2.1.3/index.mjs
- */
-export function urlToTmpPath(url: string, contentType?: string): string {
-  const parsed = new URL(url);
-  const scheme = parsed.protocol.replace(/:$/, ""); // "https" or "http"
-  let pathname = parsed.pathname;
-
-  const ext = extname(pathname);
-  if (!KNOWN_EXTS.has(ext)) {
-    // No recognised extension — treat as directory, add index file.
-    const inferredExt = extForContentType(contentType ?? "");
-    pathname = pathname.replace(/\/$/, "") + "/index" + inferredExt;
-  }
-
-  return join(TMP_ROOT, scheme, parsed.host, pathname);
+function safePathSegment(segment: string): string {
+  return segment.replace(/[^a-zA-Z0-9_.@-]/g, (character) => encodeURIComponent(character));
 }
 
-/**
- * Reverse-map a file:// URL (or local path) under the tmp root back to its
- * original HTTP(S) URL, or null if not under TMP_ROOT. Any `index.<ext>` added
- * by urlToTmpPath is kept (see file header — the resolve base is unaffected).
- *
- *   file:///tmp/node-url-import/https/esm.sh/v135/pkg@1.0.0/script.js → https://esm.sh/v135/pkg@1.0.0/script.js
- */
+/** Map an exact HTTP URL to a unique readable module path and register its reverse mapping. */
+export function urlToTmpPath(url: string, contentType = ""): string {
+  const parsed = new URL(url);
+  const extension = extname(parsed.pathname);
+  const pathSegments = parsed.pathname.split("/").filter(Boolean).map(safePathSegment);
+  const identity = createHash("sha256").update(parsed.href).digest("hex").slice(0, 16);
+  const inferredExtension = KNOWN_EXTENSIONS.has(extension) ? extension : extensionForContentType(contentType);
+  const path = join(getTemporaryRoot(), parsed.protocol.slice(0, -1), safePathSegment(parsed.host),
+    ...pathSegments, `module-${identity}${inferredExtension}`);
+  sourceUrls.set(resolve(path), parsed.href);
+  return path;
+}
+
+/** Recover the original HTTP URL only for module paths generated in this session. */
 export function tmpPathToUrl(fileUrl: string): string | null {
-  let filePath: string;
   try {
-    filePath = fileUrl.startsWith("file://")
-      ? fileURLToPath(fileUrl)
-      : fileUrl;
+    const path = fileUrl.startsWith("file:") ? fileURLToPath(fileUrl) : fileUrl;
+    return sourceUrls.get(resolve(path)) ?? null;
   } catch {
     return null;
   }
-
-  if (!filePath.startsWith(TMP_ROOT)) return null;
-
-  // Strip the TMP_ROOT prefix to get: <scheme>/<host>/<path...>
-  // Normalise to forward slashes so this works on Windows where path.join
-  // produces backslashes.
-  const relative = filePath.slice(TMP_ROOT.length + 1).replaceAll("\\", "/");
-  const slashIdx = relative.indexOf("/");
-  if (slashIdx === -1) return null;
-
-  const scheme = relative.slice(0, slashIdx);
-  const rest = relative.slice(slashIdx + 1);
-
-  // rest is: <host>/<pathname...>
-  return `${scheme}://${rest}`;
 }
 
-/**
- * Write module source to a tmp path, creating parent directories as needed.
- */
-export function writeTmpFile(tmpPath: string, source: ModuleSource): void {
-  mkdirSync(dirname(tmpPath), { recursive: true });
-  writeFileSync(tmpPath, source, "utf-8");
+/** Write text or binary source atomically, creating parent directories as needed. */
+export function writeTmpFile(path: string, source: ModuleSource): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileAtomicSync(path, source);
 }
