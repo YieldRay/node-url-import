@@ -1,11 +1,16 @@
 import process from "node:process";
 import { decodeModuleSource, readCache, writeCache } from "./cache.ts";
 import type { CacheEntry } from "./cache.ts";
-import { NAME, MAX_REDIRECTS } from "./constants.ts";
+import { FETCH_TIMEOUT_MS, NAME, MAX_REDIRECTS, isHttpUrl } from "./constants.ts";
 import { verifyModuleLock } from "./lock.ts";
 import { downloadAdd, downloadBegin, downloadDone } from "./progress.ts";
 
 const reload: boolean = process.env.URL_IMPORT_RELOAD === "1";
+
+export interface FetchOptions {
+  /** Cancels network requests and response-body reads, including redirect hops. */
+  signal?: AbortSignal;
+}
 
 /**
  * Fetch a remote module by URL, returning its source and content type.
@@ -15,10 +20,14 @@ const reload: boolean = process.env.URL_IMPORT_RELOAD === "1";
  *
  * @param url - The `http://` or `https://` URL to fetch.
  * @returns The module source, content type, original URL, and final URL after redirects.
- * @throws If the request fails or exceeds the redirect limit.
+ * @throws If the request fails, is cancelled or exceeds the redirect limit.
  */
-export async function fetchModule(url: string): Promise<CacheEntry> {
-  const cached = reload ? null : readCache(url);
+export async function fetchModule(url: string, options: FetchOptions = {}): Promise<CacheEntry> {
+  const signal = options.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  signal.throwIfAborted();
+  const normalizedUrl = new URL(url).href;
+  if (!isHttpUrl(normalizedUrl)) throw new TypeError(`Expected an HTTP(S) module URL: ${url}`);
+  const cached = reload ? null : readCache(normalizedUrl);
 
   if (cached) {
     verifyModuleLock(cached);
@@ -31,13 +40,16 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
   // Mark the slot done even on error, so counters stay balanced and the
   // progress bar can clear (a failed fetch must not orphan a slot).
   try {
-    let currentUrl = url;
-    const redirectChain: string[] = [url];
+    let currentUrl = normalizedUrl;
+    const redirectChain: string[] = [normalizedUrl];
+    const redirectLocations: string[] = [];
 
-    for (let i = 0; i < MAX_REDIRECTS; i++) {
+    // The terminal response needs one request after up to MAX_REDIRECTS hops.
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
       const res = await fetch(currentUrl, {
         headers: { "User-Agent": NAME },
         redirect: "manual",
+        signal,
       });
 
       if (res.status >= 300 && res.status < 400) {
@@ -47,12 +59,19 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
         if (!location) {
           throw new Error(`Redirect from ${currentUrl} had no Location header`);
         }
-        currentUrl = new URL(location, currentUrl).href;
+        if (redirects === MAX_REDIRECTS) throw new Error(`Too many redirects fetching ${url}`);
+        const nextUrl = new URL(location, currentUrl);
+        // HTTP redirects inherit the request fragment unless Location replaces it.
+        if (!location.includes("#")) nextUrl.hash = new URL(currentUrl).hash;
+        if (!isHttpUrl(nextUrl.href)) throw new TypeError(`Unsupported redirect URL: ${nextUrl.href}`);
+        currentUrl = nextUrl.href;
         redirectChain.push(currentUrl);
+        redirectLocations.push(location);
         continue;
       }
 
       if (!res.ok) {
+        await res.body?.cancel();
         throw new Error(
           `Failed to fetch ${currentUrl}: ${res.status} ${res.statusText}`,
         );
@@ -61,9 +80,10 @@ export async function fetchModule(url: string): Promise<CacheEntry> {
       const contentType = res.headers.get("content-type") || "application/javascript";
       const source = decodeModuleSource(new Uint8Array(await res.arrayBuffer()), currentUrl, contentType);
 
-      const entry = { source, contentType, url, finalUrl: currentUrl, redirectChain };
+      signal.throwIfAborted();
+      const entry = { source, contentType, url: normalizedUrl, finalUrl: currentUrl, redirectChain };
       verifyModuleLock(entry);
-      writeCache(redirectChain, source, contentType);
+      writeCache(redirectChain, source, contentType, redirectLocations);
       return entry;
     }
 

@@ -19,6 +19,34 @@ const server = createServer((request, response) => {
     response.writeHead(404).end();
     return;
   }
+  if (request.url?.startsWith("/redirect/")) {
+    const count = Number(request.url.slice("/redirect/".length));
+    if (count > 0) {
+      response.writeHead(302, { Location: `/redirect/${count - 1}` }).end();
+      return;
+    }
+  }
+  if (request.url === "/fragment-redirect") {
+    response.writeHead(302, { Location: "/fragment-target.mjs" }).end();
+    return;
+  }
+  if (request.url === "/fragment-replaced") {
+    response.writeHead(302, { Location: "/replaced-target.mjs#replacement" }).end();
+    return;
+  }
+  if (request.url === "/fragment-cleared") {
+    response.writeHead(302, { Location: "/cleared-target.mjs#" }).end();
+    return;
+  }
+  if (request.url === "/cancelled.mjs") {
+    response.writeHead(200, { "Content-Type": "application/javascript" });
+    response.flushHeaders();
+    return;
+  }
+  if (request.url === "/invalid-redirect") {
+    response.writeHead(302, { Location: "data:text/javascript,export default 42" }).end();
+    return;
+  }
   if (request.url === "/binary.wasm") {
     response.setHeader("Content-Type", "application/wasm");
     response.end(wasmBytes);
@@ -93,6 +121,46 @@ describe("fetchModule", () => {
     assert.deepEqual([...cached.source], [...wasmBytes]);
     assert.equal((await import(url)).answer(), 42);
     assert.equal(requests.length, 1);
+  });
+
+  it("allows ten redirects but rejects an eleventh without caching the response", async () => {
+    assert.equal((await fetchModule(`${baseUrl}/redirect/10`)).finalUrl, `${baseUrl}/redirect/0`);
+    await assert.rejects(fetchModule(`${baseUrl}/redirect/11`));
+    assert.equal(readCache(`${baseUrl}/redirect/11`), null);
+  });
+
+  it("preserves inherited fragments across network and cached redirects", async () => {
+    const first = await fetchModule(`${baseUrl}/fragment-redirect#first`);
+    const second = await fetchModule(`${baseUrl}/fragment-redirect#second`);
+    assert.equal(first.finalUrl, `${baseUrl}/fragment-target.mjs#first`);
+    assert.equal(second.finalUrl, `${baseUrl}/fragment-target.mjs#second`);
+    assert.deepEqual(requests, ["/fragment-redirect", "/fragment-target.mjs"]);
+  });
+
+  it("keeps explicit fragment replacements and removals when reading redirect stubs", async () => {
+    for (const [path, expected] of [["/fragment-replaced", "/replaced-target.mjs#replacement"], ["/fragment-cleared", "/cleared-target.mjs#"]]) {
+      const first = await fetchModule(`${baseUrl}${path}#original`);
+      const second = await fetchModule(`${baseUrl}${path}#other`);
+      assert.equal(first.finalUrl, `${baseUrl}${expected}`);
+      assert.equal(second.finalUrl, first.finalUrl);
+    }
+    assert.equal(requests.length, 4);
+  });
+
+  it("cancels response-body reads without caching partial source", async () => {
+    const url = `${baseUrl}/cancelled.mjs`;
+    await assert.rejects(fetchModule(url, { signal: AbortSignal.timeout(30) }));
+    assert.equal(readCache(url), null);
+    assert.equal((await fetchModule(`${baseUrl}/after-cancellation.mjs`)).source, 'export default "/after-cancellation.mjs";');
+  });
+
+  it("rejects redirects to non-HTTP module schemes", async () => {
+    await assert.rejects(fetchModule(`${baseUrl}/invalid-redirect`));
+    assert.equal(readCache(`${baseUrl}/invalid-redirect`), null);
+  });
+
+  it("exports the legacy loader as a resolvable package subpath", () => {
+    assert.equal(import.meta.resolve("node-url-import/loader"), new URL("../dist/loader.js", import.meta.url).href);
   });
 
   it("uses Deno-compatible names for port-specific cache entries", () => {

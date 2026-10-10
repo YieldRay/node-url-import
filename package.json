@@ -26,6 +26,9 @@
     },
     "./register": {
       "default": "./dist/register-hooks.js"
+    },
+    "./loader": {
+      "default": "./dist/loader.js"
     }
   },
   "bin": {

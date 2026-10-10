@@ -151,7 +151,9 @@ export function writeFileAtomicSync(path: string, source: ModuleSource): void {
 }
 
 /** Write one Deno-format stub per redirect hop plus the final source entry. */
-export function writeCache(redirectChain: string[], source: ModuleSource, contentType: string): void {
+export function writeCache(
+  redirectChain: string[], source: ModuleSource, contentType: string, redirectLocations?: string[],
+): void {
   const finalUrl = redirectChain.at(-1);
   if (!finalUrl) throw new TypeError("A cache entry must have a URL");
 
@@ -168,7 +170,9 @@ export function writeCache(redirectChain: string[], source: ModuleSource, conten
   for (let index = redirectChain.length - 2; index >= 0; index--) {
     writeEntry(redirectChain[index]!, Buffer.alloc(0), {
       "content-length": "0",
-      location: withoutFragment(redirectChain[index + 1]!),
+      // Raw Location retains an explicitly replaced or cleared fragment. When
+      // callers only supply a chain, omit inherited fragments from its stubs.
+      location: redirectLocations?.[index] ?? withoutFragment(redirectChain[index + 1]!),
     });
   }
 }

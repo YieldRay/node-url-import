@@ -1,48 +1,103 @@
-import { describe, it } from "node:test";
+import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { fetchModuleSync } from "./sync-fetch.ts";
-import { cachePaths } from "./cache.ts";
+import process from "node:process";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-describe("fetchModuleSync", () => {
-  it("should fetch a module synchronously from esm.sh", () => {
-    const result = fetchModuleSync("https://esm.sh/ms@2.1.3");
-    assert.equal(typeof result.source, "string");
-    assert.ok(typeof result.source === "string" && result.source.length > 0);
-    assert.ok(
-      result.contentType.includes("javascript") ||
-        result.contentType.includes("typescript"),
-    );
-    assert.equal(typeof result.finalUrl, "string");
-    assert.ok(result.finalUrl.startsWith("https://"));
+const server = createServer((request, response) => {
+  if (request.url === "/never.mjs") return;
+  if (request.url === "/missing.mjs") {
+    response.writeHead(404).end();
+    return;
+  }
+  response.setHeader("Content-Type", "application/javascript");
+  response.end("export default 42;");
+});
+let baseUrl: string;
+let workspace: string;
+
+before(async () => {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  baseUrl = `http://127.0.0.1:${address.port}`;
+});
+after(async () => {
+  server.closeAllConnections();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+beforeEach(() => { workspace = mkdtempSync(join(tmpdir(), "node-url-import-sync-test-")); });
+afterEach(() => { rmSync(workspace, { recursive: true, force: true }); });
+
+function runScript(code: string) {
+  return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", code], {
+      env: { ...process.env, DENO_DIR: join(workspace, "deno") },
+      stdio: ["ignore", "pipe", "pipe"], timeout: 5_000, killSignal: "SIGKILL",
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+const fetcherUrl = new URL("./sync-fetch.ts", import.meta.url).href;
+const cacheUrl = new URL("./cache.ts", import.meta.url).href;
+
+describe("synchronous fetch worker", () => {
+  it("fetches and reuses cache entries without inheriting eval-only Node flags", async () => {
+    const result = await runScript(`
+      import assert from "node:assert/strict";
+      const { fetchModuleSync } = await import(${JSON.stringify(fetcherUrl)});
+      const first = fetchModuleSync(${JSON.stringify(`${baseUrl}/module.mjs`)});
+      const second = fetchModuleSync(${JSON.stringify(`${baseUrl}/module.mjs`)});
+      assert.equal(first.source, "export default 42;");
+      assert.deepEqual(second, first);
+    `);
+    assert.equal(result.status, 0, result.stderr);
   });
 
-  it("should write a cache entry to disk after fetching", () => {
-    const url = "https://esm.sh/ms@2.1.3";
-    const first = fetchModuleSync(url);
-
-    // The requested URL must have a cache entry on disk after fetching
-    // (either a source entry or a redirect stub pointing at the resolved URL).
-    assert.ok(
-      existsSync(cachePaths(url).file),
-      "expected a cache entry for the requested URL after fetching",
-    );
-    // The final (post-redirect) URL must have its own source entry cached.
-    assert.ok(
-      existsSync(cachePaths(first.finalUrl).file),
-      "expected a cache entry for the final URL after fetching",
-    );
-
-    // A second call returns the same content from that cache.
-    const second = fetchModuleSync(url);
-    assert.equal(first.source, second.source);
-    assert.equal(first.finalUrl, second.finalUrl);
+  it("recovers after a normal network failure", async () => {
+    const result = await runScript(`
+      import assert from "node:assert/strict";
+      const { fetchModuleSync } = await import(${JSON.stringify(fetcherUrl)});
+      assert.throws(() => fetchModuleSync(${JSON.stringify(`${baseUrl}/missing.mjs`)}));
+      assert.equal(fetchModuleSync(${JSON.stringify(`${baseUrl}/recovered.mjs`)}).source, "export default 42;");
+    `);
+    assert.equal(result.status, 0, result.stderr);
   });
 
-  it("should throw on invalid URL", () => {
-    assert.throws(
-      () => fetchModuleSync("https://esm.sh/this-package-does-not-exist-xyz-999"),
-      /Failed to fetch|404/,
-    );
+  it("bounds worker failure waits and restarts the worker for later requests", async () => {
+    const result = await runScript(`
+      import assert from "node:assert/strict";
+      import { Worker } from "node:worker_threads";
+      const { fetchModuleSync } = await import(${JSON.stringify(fetcherUrl)});
+      const postMessage = Worker.prototype.postMessage;
+      Worker.prototype.postMessage = function () { void this.terminate(); };
+      try {
+        assert.throws(() => fetchModuleSync(${JSON.stringify(`${baseUrl}/crashed.mjs`)}, { timeoutMs: 100 }));
+      } finally {
+        Worker.prototype.postMessage = postMessage;
+      }
+      assert.equal(fetchModuleSync(${JSON.stringify(`${baseUrl}/after-crash.mjs`)}).source, "export default 42;");
+    `);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  it("times out a stalled response without caching it or breaking later requests", async () => {
+    const result = await runScript(`
+      import assert from "node:assert/strict";
+      const { fetchModuleSync } = await import(${JSON.stringify(fetcherUrl)});
+      const { readCache } = await import(${JSON.stringify(cacheUrl)});
+      assert.throws(() => fetchModuleSync(${JSON.stringify(`${baseUrl}/never.mjs`)}, { timeoutMs: 200 }));
+      assert.equal(readCache(${JSON.stringify(`${baseUrl}/never.mjs`)}), null);
+      assert.equal(fetchModuleSync(${JSON.stringify(`${baseUrl}/after-timeout.mjs`)}).source, "export default 42;");
+    `);
+    assert.equal(result.status, 0, result.stderr);
   });
 });

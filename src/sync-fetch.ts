@@ -1,70 +1,55 @@
 /**
  * Synchronous module fetcher.
  *
- * On cache hit: reads from disk cache (sync).
- * On cache miss: blocks via Atomics.wait while a persistent worker thread
- * does the async HTTP fetch, then reads the result via receiveMessageOnPort.
+ * Cache hits are read and verified synchronously. On a miss, a persistent worker
+ * performs the asynchronous HTTP request while this thread waits on Atomics.
+ * Completion data arrives on a transferred port; the bounded wait also handles
+ * worker startup failures whose error events cannot run while this thread blocks.
  */
 
-import {
-  Worker,
-  MessageChannel,
-  receiveMessageOnPort,
-} from "node:worker_threads";
+import { Worker, MessageChannel, receiveMessageOnPort } from "node:worker_threads";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { readCache } from "./cache.ts";
-import type { CacheEntry, ModuleSource } from "./cache.ts";
+import type { CacheEntry } from "./cache.ts";
 import { verifyModuleLock } from "./lock.ts";
+import { FETCH_TIMEOUT_MS } from "./constants.ts";
 
-// Lazy-initialized worker
 let worker: Worker | null = null;
-
-/**
- * Resolve the worker path relative to this file's import.meta.url.
- * Works both from source (.ts, Node 24+ or --import with TS support)
- * and from compiled output (.js).
- */
-function resolveWorkerPath(): string {
-  const selfUrl = import.meta.url;
-  const ext = selfUrl.endsWith(".ts") ? ".ts" : ".js";
-  return fileURLToPath(new URL(`./sync-fetch-worker${ext}`, selfUrl));
-}
 
 function getWorker(): Worker {
   if (!worker) {
-    // Use an empty execArgv so the worker doesn't inherit flags from the parent
-    // that are invalid for worker threads (e.g. --input-type, --tls-cipher-list).
-    const w = new Worker(resolveWorkerPath(), { execArgv: [] });
-    w.unref(); // Don't keep the process alive
-    w.on("error", () => {
-      worker = null;
-    });
-    w.on("exit", () => {
-      worker = null;
-    });
-    worker = w;
+    // Resolve relative to this module so source .ts and published .js both work.
+    const extension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+    const path = fileURLToPath(new URL(`./sync-fetch-worker${extension}`, import.meta.url));
+    // Hook and eval flags must never be inherited by the network worker.
+    const current = new Worker(path, { execArgv: [] });
+    current.unref();
+    const reset = (): void => { if (worker === current) worker = null; };
+    current.on("error", reset);
+    current.on("exit", reset);
+    worker = current;
   }
   return worker;
 }
 
-interface WorkerResponse {
-  error?: string;
-  source?: ModuleSource;
-  contentType?: string;
-  url?: string;
-  finalUrl?: string;
-  redirectChain?: string[];
+function discardWorker(current: Worker): void {
+  if (worker === current) worker = null;
+  void current.terminate();
 }
 
-/**
- * Fetch a module synchronously. Checks disk cache first, then
- * blocks the main thread while the worker fetches from the network.
- */
-export function fetchModuleSync(url: string): CacheEntry {
-  // Fast path: check disk cache synchronously
-  const reload = process.env.URL_IMPORT_RELOAD === "1";
-  if (!reload) {
+export interface SyncFetchOptions {
+  /** Maximum blocking time, including worker startup; defaults to 60 seconds. */
+  timeoutMs?: number;
+}
+
+type WorkerResponse = { entry: CacheEntry } | { error: string };
+
+/** Fetch synchronously from verified disk cache or the network worker. */
+export function fetchModuleSync(url: string, options: SyncFetchOptions = {}): CacheEntry {
+  const timeoutMs = options.timeoutMs ?? FETCH_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("The fetch timeout must be positive and finite");
+  if (process.env.URL_IMPORT_RELOAD !== "1") {
     const cached = readCache(url);
     if (cached) {
       verifyModuleLock(cached);
@@ -72,38 +57,33 @@ export function fetchModuleSync(url: string): CacheEntry {
     }
   }
 
-  // Cache miss — delegate to worker and block
-  const w = getWorker();
-  const sab = new SharedArrayBuffer(4);
-  const signal = new Int32Array(sab);
+  const current = getWorker();
+  const signal = new Int32Array(new SharedArrayBuffer(4));
   const { port1, port2 } = new MessageChannel();
-
-  w.postMessage({ url, sab, port: port2 }, [port2]);
-
-  // Block until the worker signals completion (no timeout, matching Deno).
-  if (Atomics.wait(signal, 0, 0) === "timed-out") {
+  try {
+    try {
+      current.postMessage({ url, timeoutMs, signal: signal.buffer, port: port2 }, [port2]);
+    } catch (error) {
+      discardWorker(current);
+      throw error;
+    }
+    // Worker error/exit callbacks cannot execute during Atomics.wait. On timeout,
+    // clear the cached worker immediately so a subsequent request can restart it.
+    if (Atomics.wait(signal, 0, 0, timeoutMs) === "timed-out") {
+      discardWorker(current);
+      throw new Error(`Timed out fetching ${url}`);
+    }
+    const message = receiveMessageOnPort(port1);
+    if (!message) {
+      discardWorker(current);
+      throw new Error(`No response from fetch worker for ${url}`);
+    }
+    const response = message.message as WorkerResponse;
+    if ("error" in response) throw new Error(`Error fetching ${url}: ${response.error}`);
+    verifyModuleLock(response.entry);
+    return response.entry;
+  } finally {
     port1.close();
-    throw new Error(`Timed out fetching ${url}`);
+    port2.close();
   }
-
-  // Read the result from the port
-  const msg = receiveMessageOnPort(port1);
-  port1.close();
-
-  if (!msg) {
-    throw new Error(`No response from fetch worker for ${url}`);
-  }
-
-  const response = msg.message as WorkerResponse;
-  if (response.error) {
-    throw new Error(`Error fetching ${url}: ${response.error}`);
-  }
-
-  return {
-    source: response.source!,
-    contentType: response.contentType!,
-    url: response.url!,
-    finalUrl: response.finalUrl!,
-    redirectChain: response.redirectChain!,
-  };
 }

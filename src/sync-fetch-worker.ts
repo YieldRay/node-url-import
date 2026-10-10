@@ -1,58 +1,39 @@
 /**
- * Worker thread that performs async HTTP fetch on behalf of the main thread.
- *
- * Communication protocol:
- *   Main → Worker: { url: string, sab: SharedArrayBuffer, port: MessagePort }
- *   Worker → Main: posts result on port, then signals via Atomics.notify(sab)
- *
- * The worker stays alive to amortise startup cost across multiple fetches.
+ * Persistent network worker for synchronous hooks.
+ * Main → worker: { url, timeoutMs, signal: SharedArrayBuffer, port }.
+ * Worker → main: post { entry } or { error }, then notify the shared signal.
+ * Posting before notification lets receiveMessageOnPort read the result even
+ * while the main thread's event loop remains blocked.
  */
 
 import { parentPort } from "node:worker_threads";
 import type { MessagePort } from "node:worker_threads";
 import { fetchModule } from "./fetch.ts";
-import type { ModuleSource } from "./cache.ts";
+import type { CacheEntry } from "./cache.ts";
 
 interface FetchRequest {
   url: string;
-  sab: SharedArrayBuffer;
+  timeoutMs: number;
+  signal: SharedArrayBuffer;
   port: MessagePort;
 }
 
-interface FetchResponse {
-  error?: string;
-  source?: ModuleSource;
-  contentType?: string;
-  url?: string;
-  finalUrl?: string;
-  redirectChain?: string[];
-}
+type FetchResponse = { entry: CacheEntry } | { error: string };
 
-parentPort!.on("message", async (msg: FetchRequest) => {
-  const { url, sab, port } = msg;
-  const signal = new Int32Array(sab);
-
+parentPort!.on("message", async ({ url, timeoutMs, signal: buffer, port }: FetchRequest) => {
+  const signal = new Int32Array(buffer);
   let response: FetchResponse;
   try {
-    const result = await fetchModule(url);
-    response = {
-      source: result.source,
-      contentType: result.contentType,
-      url: result.url,
-      finalUrl: result.finalUrl,
-      redirectChain: result.redirectChain,
-    };
-  } catch (err) {
-    response = {
-      error: err instanceof Error ? err.message : String(err),
-    };
+    response = { entry: await fetchModule(url, { signal: AbortSignal.timeout(timeoutMs) }) };
+  } catch (error) {
+    response = { error: error instanceof Error ? error.message : String(error) };
   }
-
-  // Post the result data on the transferred port
-  port.postMessage(response);
-  port.close();
-
-  // Signal the main thread that the result is ready
-  Atomics.store(signal, 0, 1);
-  Atomics.notify(signal, 0);
+  try {
+    port.postMessage(response);
+  } finally {
+    // Always release the wait, including when sending the response fails.
+    port.close();
+    Atomics.store(signal, 0, 1);
+    Atomics.notify(signal, 0);
+  }
 });
