@@ -1,6 +1,6 @@
 # node-url-import
 
-Node.js hook that lets you `import` (and `require`) modules directly from HTTP(S) URLs like Deno.
+Node.js hook that lets you `import` (and `require`) modules directly from HTTP(S) URLs like Deno. Zero runtime dependencies.
 
 ```js
 import { add } from "https://esm.sh/lodash-es";
@@ -32,11 +32,10 @@ npm i -g node-url-import
 # OR
 npx node-url-import
 
-node-url-import [options] [node-flags] <script-or-url> [script-args...]
+node-url-import [options] [node-flags] [script-or-url] [script-args...]
 ```
 
-Flags before the script are split into node-url-import options and Node.js flags.
-Flags after the script are forwarded to the remote script as-is.
+Place node-url-import options first; the remaining arguments are passed unchanged to Node.js. Node handles its own flags and values, `-e`/`-p`, stdin, and script arguments. Use `--` before a filename that starts with `-`.
 
 ```sh
 # Run a local file that imports from URLs
@@ -46,7 +45,7 @@ node-url-import ./app.mjs
 node-url-import https://raw.esm.sh/armor64/dist/cli.js
 
 # Re-fetch all remote modules (bypass cache)
-node-url-import -r ./app.mjs
+node-url-import --reload ./app.mjs
 
 # Pass Node.js flags (e.g. --inspect)
 node-url-import --inspect ./app.mjs
@@ -92,14 +91,15 @@ node --loader node-url-import/loader ./app.mjs
 
 ### npm: specifiers
 
-Modules can use Deno-style `npm:` specifiers to import from `node_modules`. The version is stripped and the module is resolved by Node's default resolver:
+`npm:` specifiers check local packages with `require.resolve` first. Local lookup strips the requested version; it does not install or enforce that version. Missing packages fall back to the configured CDN, or `https://esm.sh/`, preserving the version and subpath:
 
 ```js
-import ms from "npm:ms";
-import ms from "npm:ms@2.1.3"; // version stripped → "ms"
-import add from "npm:lodash-es@4/add"; // → "lodash-es/add"
-import node from "npm:@types/node@22"; // → "@types/node"
+import ms from "npm:ms@2.1.3"; // local: ms; fallback: https://esm.sh/ms@2.1.3
+import add from "npm:lodash-es@4/add"; // local: lodash-es/add
+import { parse } from "npm:@babel/parser@7"; // local: @babel/parser
 ```
+
+Remote modules look for local packages from the current working directory. Installed packages use `require` export conditions; export errors do not trigger CDN fallback.
 
 ### CDN bare specifiers
 
@@ -110,40 +110,47 @@ import { z } from "zod"; // → https://esm.sh/zod
 ```
 
 - `--cdn` uses the default base `https://esm.sh/`.
-- `--cdn=<url>` uses a custom base (a trailing `/` is added if missing), e.g. `--cdn=https://cdn.jsdelivr.net/npm/`.
+- `--cdn=<url>` accepts an HTTP(S) base without query or fragment and adds a trailing `/` if needed, e.g. `--cdn=https://cdn.jsdelivr.net/npm/`.
 - Node built-ins (`node:fs`, `http`, `crypto`, …), relative imports (`./x`), and full URLs are left untouched.
-- `npm:` specifiers still resolve from `node_modules`, regardless of `--cdn`.
+- `npm:` still prefers local packages; missing packages use the selected CDN.
 
 ### jsr: specifiers
 
-When `--cdn` is specified or set to `https://esm.sh/` (the default), Deno-style `jsr:` specifiers are mapped to esm.sh.
+Deno-style `jsr:` specifiers require `--cdn` or an esm.sh CDN base (`--cdn=https://esm.sh/`):
 
 ```js
 import { encodeBase64 } from "jsr:@std/encoding@1.0.0/base64"; // → https://esm.sh/jsr/@std/encoding@1.0.0/base64
 import { Hono } from "jsr:@hono/hono@4"; // → https://esm.sh/jsr/@hono/hono@4
 ```
 
+### Temporary modules
+
+`--tmp` loads remote modules as local files under `<system-tmp>/node-url-import/session-…/`, so `import.meta.url` is a `file:` URL. Paths mirror the remote URL and include a unique module filename; relative imports retain their original HTTP base, including for extensionless URLs. Session files remain until removed manually or by the OS.
+
 ### Programmatic API
 
 ```js
 import { fetchModule, clearCache } from "node-url-import";
 
-const { source, contentType } = await fetchModule(
+const { source, contentType, finalUrl, redirectChain } = await fetchModule(
   "https://esm.sh/lodash-es/add",
+  { signal: AbortSignal.timeout(10_000) },
 );
 console.log(source);
 
-await clearCache();
+clearCache(); // synchronous; purges the shared Deno remote cache
 ```
+
+`fetchModule` returns a `CacheEntry`; `source` is text or `Uint8Array` for Wasm. Network requests default to a 60-second timeout; an explicit `{ signal }` replaces it. Exported types: `FetchOptions`, `CacheEntry`, `ModuleSource`.
 
 ## How it works
 
 1. On Node 22.15+, synchronous hooks (`module.registerHooks()`) intercept both `import` and `require` calls for HTTP(S) URLs. On older Node, async hooks (`module.register()`) support ESM `import` only.
-2. `resolve` follows redirects to the final URL so that relative imports inside a remote module (e.g. `import "./util.js"`) resolve against the correct base. Bare specifiers like `"node:fs"` fall through to Node's default resolver.
-3. Fetched sources are cached in Deno's remote module cache (`$DENO_DIR/remote/`, defaulting to `~/Library/Caches/deno/remote/` on macOS and `~/.cache/deno/remote/` on Linux), using the same file layout as Deno — so both runtimes share the same cache.
-4. For `require()` (synchronous), cache hits are served via `readFileSync`. On cache miss, a persistent worker thread fetches asynchronously while the main thread blocks via `Atomics.wait`.
-5. Cached modules are used forever until `--reload` is passed or `--clear-cache` is used (same as Deno).
-6. Module format is inferred from the `Content-Type` header and URL extension, defaulting to ESM. TypeScript files (`.ts`, `.tsx`, `.mts`, `.cts`) are loaded using Node's built-in type stripping on Node 22.18+.
+2. `resolve` follows up to 10 redirects before choosing the module identity, including for relative imports and CLI entries. `load` reuses the fetched source instead of downloading twice. Node built-ins stay local.
+3. Fetched sources use Deno's remote cache (`$DENO_DIR/remote/`, defaulting to `~/Library/Caches/deno/remote/` on macOS and `~/.cache/deno/remote/` on Linux). Writes are atomic; keys include pathname and query, while fragments retain separate module identities.
+4. Synchronous hooks serve verified cache hits via `readFileSync`; misses use a persistent network worker and `Atomics.wait`. The wait is bounded to 60 seconds, and failed/timed-out workers can restart.
+5. Disk cache entries do not expire. `--reload` bypasses them; `--clear-cache` removes the shared remote cache. Node's in-process module cache still applies.
+6. Format comes from `Content-Type` and the final URL, defaulting to ESM. TypeScript uses native type stripping (`.cts` keeps CommonJS semantics); Wasm source stays binary and requires Node's Wasm import support.
 7. A Deno-style progress bar is shown on stderr during downloads (only on TTY).
 
 ## Known limitations
@@ -159,7 +166,9 @@ file URL string, or absolute path string. Received 'https://example.com/bundle.j
 
 This affects some bundler outputs (e.g. esbuild ESM bundles of packages like `ws`) even when the resulting `require` is only used for Node built-ins. Deno avoids this by polyfilling `createRequire` to accept remote URLs; this tool relies on Node's native, file-only implementation.
 
-**Workarounds:** use `--cdn` (or import directly) from a CDN that ships a build which doesn't call `createRequire(import.meta.url)`, or use the package's `node_modules` build.
+**Workarounds:** use `--tmp` to supply a local `file:` URL, choose a CDN build that avoids the call, or use the local package.
+
+For HTTP CLI entries, `process.argv[1]` is Node's path-normalized entry argument, not the original URL. Use `import.meta.url` for the module location (a local file URL with `--tmp`).
 
 ## Node.js version compatibility
 
@@ -167,25 +176,26 @@ This affects some bundler outputs (e.g. esbuild ESM bundles of packages like `ws
 |---------|----------------|
 | ESM `import` (via `module.register`) | v18.19.0 / v20.6.0 |
 | ESM `import` (via `module.registerHooks`) | v22.15.0 / v23.5.0 |
-| Remote TypeScript (`.ts`, `.tsx`, `.mts`, `.cts`) | v22.18.0 |
+| Remote TypeScript (`.ts`, `.mts`, `.cts`) | v22.18.0 |
 | CJS `require` of HTTP URLs | v24+ |
 
 ## Options
 
 | Flag                 | Description                                                                |
 | -------------------- | -------------------------------------------------------------------------- |
-| `-r, --reload`       | Bypass cache, re-fetch all remote modules                                  |
+| `--reload`          | Bypass cache, re-fetch all remote modules                                  |
 | `--lock`             | Check/write a lock file (default: `./deno.lock`)                           |
 | `--lock-file <path>` | Lock file path (implies `--lock`)                                          |
-| `--frozen`           | Error if lock file is out of date (use with `--lock`)                      |
-| `--tmp`              | Write fetched modules to a tmp dir with readable paths (CLI only)          |
-| `--clear-cache`      | Purge the disk cache                                                       |
+| `--frozen`           | Reject missing/changed lock records without updates (implies `--lock`)     |
+| `--tmp`              | Load remote modules as readable local temporary files                     |
+| `--cdn[=<url>]`      | Map bare packages to a CDN (default: `https://esm.sh/`)                     |
+| `--clear-cache`      | Purge the shared Deno remote cache                                         |
 
-Any unrecognized flags before the script are forwarded to Node.js (e.g. `--inspect`, `--env-file`).
+Place these options before Node.js flags. `-r` keeps Node's `--require` meaning. Boolean options accept `--flag=false` or `--no-flag`, including `--frozen=false` and `--no-cdn` to override inherited settings.
 
 ## Lock file
 
-When `--lock` is passed, node-url-import writes a lock file recording the SHA-256 hash of every fetched remote module. The format is compatible with Deno's `deno.lock`:
+`--lock` verifies cached and downloaded modules, recording final-source SHA-256 hashes and each redirect hop in Deno's `deno.lock` format. Writes preserve existing npm, JSR and workspace sections:
 
 ```json
 {
@@ -199,11 +209,11 @@ When `--lock` is passed, node-url-import writes a lock file recording the SHA-25
 }
 ```
 
-On subsequent runs with `--lock`, fetched content is verified against the recorded hashes. Use `--frozen` to error on any mismatch instead of updating.
+Hash mismatches always fail, even without `--frozen`. Non-frozen mode adds missing hashes and updates redirects; frozen mode rejects those changes. `--reload` re-fetches source but does not overwrite an existing hash—investigate and deliberately regenerate the lock when changing locked code.
 
 ## TypeScript
 
-Remote TypeScript modules are supported on Node 22.18+ via Node's built-in type stripping. Files with `.ts`, `.tsx`, `.mts`, or `.cts` extensions (and URLs served with `text/typescript` or `application/typescript` content-type) are automatically loaded with the `module-typescript` format:
+Remote TypeScript uses Node 22.18+ native type stripping. `.ts`, `.mts` and TypeScript content types use `module-typescript`; `.cts` uses `commonjs-typescript`, including with a TypeScript MIME type. JSX and syntax requiring transpilation are not supported:
 
 ```sh
 node-url-import https://deno.land/std@0.224.0/path/mod.ts
@@ -217,11 +227,10 @@ TypeScript does not resolve `https://` specifiers out of the box. Add an ambient
 declare module 'https://*' {
   const mod: unknown;
   export default mod;
-  export * from 'module';
 }
 ```
 
-For finer-grained types, declare specific remote modules explicitly:
+For named exports or finer-grained types, declare specific remote modules explicitly:
 
 ```ts
 declare module 'https://esm.sh/lodash-es' {
@@ -239,6 +248,9 @@ Node.js v20 shipped a built-in [`--experimental-network-imports`](https://nodejs
 | ------------------------- | ------------------------------------------------------------------------- | ------------------------------- |
 | `DENO_DIR`                | Deno's root cache directory (shared with Deno)                            | `~/Library/Caches/deno` (macOS), `~/.cache/deno` (Linux) |
 | `URL_IMPORT_RELOAD=1`     | Same as `--reload`                                                        |                                 |
-| `URL_IMPORT_LOCK=<path>`  | Same as `--lock <file>`                                                   |                                 |
-| `URL_IMPORT_FROZEN=1`     | Same as `--frozen`                                                        |                                 |
+| `URL_IMPORT_LOCK=<path>`  | Same as `--lock-file <path>`                                               |                                 |
+| `URL_IMPORT_FROZEN=1`     | Frozen verification; requires `URL_IMPORT_LOCK`                            |                                 |
 | `URL_IMPORT_TMP=1`        | Same as `--tmp`                                                           |                                 |
+| `URL_IMPORT_CDN=<base/>`  | Same as `--cdn=<url>`; include the trailing `/`                             |                                 |
+
+Set these variables before registering hooks. The CLI's `--frozen` supplies the default lock path automatically.

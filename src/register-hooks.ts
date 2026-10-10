@@ -10,6 +10,22 @@
  */
 
 import module from "node:module";
+import process from "node:process";
+import { resolve as resolvePath } from "node:path";
+import { isHttpUrl } from "./constants.ts";
+
+// Node has already parsed its flags. Exclude the CLI's injected --import pair
+// when locating the original entry; eval arguments must not become remote mains.
+const mainCandidates = process.env.URL_IMPORT_MAIN_CANDIDATES;
+delete process.env.URL_IMPORT_MAIN_CANDIDATES;
+if (mainCandidates) {
+  const candidates: Record<string, string> = JSON.parse(mainCandidates);
+  const index = process.execArgv.length - 2;
+  const target = candidates[candidates[index] === "--" ? index + 1 : index];
+  if (target && isHttpUrl(target) && resolvePath(target) === process.argv[1]) {
+    process.env.URL_IMPORT_MAIN = target;
+  }
+}
 
 export const importMetaUrl = import.meta.url;
 

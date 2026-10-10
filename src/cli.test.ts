@@ -39,11 +39,12 @@ interface Dump {
   };
 }
 
-function runCli(args: string[], extraEnv: Record<string, string> = {}) {
+function runCli(args: string[], extraEnv: Record<string, string> = {}, input = "") {
   return spawnSync(process.execPath, ["src/cli.ts", ...args], {
     cwd: process.cwd(),
     env: { ...process.env, DENO_DIR: join(fixtureDir, "deno"), TMPDIR: fixtureDir, ...extraEnv },
     encoding: "utf-8",
+    input,
     timeout: 30_000,
   });
 }
@@ -69,16 +70,67 @@ after(() => {
 });
 
 describe("CLI: help and usage", () => {
-  it("should print usage and exit 0 with no arguments", () => {
-    const result = runCli([]);
-    assert.equal(result.status, 0);
-    assert.ok(result.stdout.length > 0);
+  it("lets Node read stdin when no arguments are given", () => {
+    const result = runCli([], {}, "console.log(73)");
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "73");
   });
 
   it("should print usage and exit 0 with --help", () => {
     const result = runCli(["--help"]);
     assert.equal(result.status, 0);
     assert.ok(result.stdout.length > 0);
+  });
+});
+
+describe("CLI: Node execution modes", () => {
+  it("runs inline code with -e without requiring a script entry", () => {
+    const result = runCli(["-e", "console.log(42)"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "42");
+  });
+
+  it("prints an expression with -p and the native -pe shorthand", () => {
+    for (const flag of ["-p", "-pe"]) {
+      const result = runCli([flag, "21 * 2"]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), "42");
+    }
+  });
+
+  it("preserves eval arguments after -- without consuming own-looking flags", () => {
+    const result = runCli(["--tmp", "--input-type=module", "--eval", DUMP_SCRIPT, "--", "argument", "--reload"]);
+    assert.equal(result.status, 0, result.stderr);
+    const output: Dump = JSON.parse(result.stdout);
+    assert.deepEqual(output.argv, ["--reload"]);
+    assert.equal(output.env.TMP, "1");
+    assert.equal(output.env.RELOAD, undefined);
+    assert.deepEqual(output.execArgv.slice(2), ["--input-type=module", "--eval", DUMP_SCRIPT]);
+  });
+
+  it("reads an explicit stdin entry with its script arguments", () => {
+    const result = runCli(["--tmp", "-", "--reload", "--clear-cache"], {}, DUMP_SCRIPT);
+    assert.equal(result.status, 0, result.stderr);
+    const output: Dump = JSON.parse(result.stdout);
+    assert.deepEqual(output.argv, ["--reload", "--clear-cache"]);
+    assert.equal(output.env.TMP, "1");
+    assert.equal(output.env.RELOAD, undefined);
+  });
+
+  it("forwards --version to Node", () => {
+    const result = runCli(["--version"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), process.version);
+  });
+
+  it("leaves invalid Node flags and missing Node values for Node to reject", () => {
+    for (const args of [["--not-a-node-option"], ["--title"], ["--eval"], ["--title", "--tmp"]]) {
+      const expected = spawnSync(process.execPath, args, { encoding: "utf8", input: "" });
+      const result = runCli(args);
+      assert.equal(result.status, expected.status);
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, expected.stdout);
+    }
   });
 });
 
@@ -156,9 +208,8 @@ describe("CLI: own-flag to env translation", () => {
     assert.equal(env.FROZEN, undefined);
   });
 
-  it("should translate --reload / -r to URL_IMPORT_RELOAD=1", () => {
+  it("should translate --reload to URL_IMPORT_RELOAD=1", () => {
     assert.equal(runDump(["--reload"]).env.RELOAD, "1");
-    assert.equal(runDump(["-r"]).env.RELOAD, "1");
   });
 
   it("should translate --tmp to URL_IMPORT_TMP=1", () => {
@@ -207,7 +258,7 @@ describe("CLI: own-flag to env translation", () => {
   });
 
   it("should combine multiple own flags", () => {
-    const { env } = runDump(["-r", "--tmp"]);
+    const { env } = runDump(["--reload", "--tmp"]);
     assert.equal(env.RELOAD, "1");
     assert.equal(env.TMP, "1");
   });
@@ -246,11 +297,23 @@ describe("CLI: node flag pass-through", () => {
   });
 
   it("should forward node flags while consuming its own flags", () => {
-    // -r is ours (→ env, not forwarded); --title is node's (→ execArgv).
-    const dump = runDump(["-r", "--title=node-url-import-test"]);
+    // --reload is ours (→ env, not forwarded); --title is Node's (→ execArgv).
+    const dump = runDump(["--reload", "--title=node-url-import-test"]);
     assert.equal(dump.env.RELOAD, "1");
     assert.ok(dump.execArgv.includes("--title=node-url-import-test"));
-    assert.ok(!dump.execArgv.some((a) => a.startsWith("-r")));
+    assert.ok(!dump.execArgv.includes("--reload"));
+  });
+
+  it("keeps -r as Node's CommonJS preload and does not enable reload", () => {
+    const preload = join(fixtureDir, "preload.cjs");
+    writeFileSync(preload, 'process.env.CLI_PRELOADED = "1";');
+    const result = runCli(["--tmp", "-r", preload, "-p", 'JSON.stringify({ preloaded: process.env.CLI_PRELOADED, reload: process.env.URL_IMPORT_RELOAD, tmp: process.env.URL_IMPORT_TMP, execArgv: process.execArgv })']);
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.preloaded, "1");
+    assert.equal(output.reload, undefined);
+    assert.equal(output.tmp, "1");
+    assert.equal(output.execArgv[output.execArgv.indexOf("-r") + 1], preload);
   });
 
   it("does not inherit a remote main entry when a local script is selected", () => {
@@ -259,8 +322,8 @@ describe("CLI: node flag pass-through", () => {
     assert.equal(JSON.parse(result.stdout).env.MAIN, undefined);
   });
 
-  it("preserves required Node option values mixed with own options", () => {
-    const dump = runDump(["--title", "test-title", "--tmp", "--conditions", "test-condition"]);
+  it("preserves required Node option values after consuming leading own options", () => {
+    const dump = runDump(["--tmp", "--title", "test-title", "--conditions", "test-condition"]);
     assert.equal(dump.env.TMP, "1");
     assert.deepEqual(dump.argv, []);
     const titleIndex = dump.execArgv.indexOf("--title");
@@ -279,6 +342,15 @@ describe("CLI: node flag pass-through", () => {
     const envIndex = dump.execArgv.indexOf("--env-file");
     assert.equal(dump.execArgv[preloadIndex + 1], preload);
     assert.equal(dump.execArgv[envIndex + 1], envFile);
+  });
+
+  it("stops consuming own options when Node's arguments start", () => {
+    const args = ["--title", "test-title", "--tmp", dumpScript];
+    const expected = spawnSync(process.execPath, args, { encoding: "utf8", input: "" });
+    const result = runCli(args);
+    assert.notEqual(expected.status, 0);
+    assert.equal(result.status, expected.status);
+    assert.equal(result.stdout, expected.stdout);
   });
 
   it("does not consume the script as an optional inspector value", () => {

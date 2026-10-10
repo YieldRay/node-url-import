@@ -26,6 +26,7 @@ const server = createServer((request, response) => {
     "/v2/dep.mjs": 'export default "correct";',
     "/v1/dep.mjs": 'export default "wrong";',
     "/reload.mjs": 'export default 42;',
+    "/identity.mjs?value=%23%3F": 'console.log(JSON.stringify({ url: import.meta.url, main: import.meta.main, argv: process.argv.slice(2) }));',
     "/cdn/node-url-import-uninstalled@2/sub": 'export default 73;',
     "/typed.cts": 'const value: number = 17; module.exports = value;',
     "/npm-parent.mjs": 'import ts from "npm:typescript@6"; console.log(JSON.stringify({ version: ts.version }));',
@@ -88,6 +89,46 @@ describe("remote resolution", () => {
     assert.equal(output.value, "correct");
     assert.equal(output.url, `${baseUrl}/v1/main.mjs`);
     assert.equal(output.main, true);
+  });
+
+  it("lets Node select a remote entry after its own valued flags", async () => {
+    const result = await run([cliPath.pathname, "--reload", "--title", "cli-title", `${baseUrl}/entry.mjs#identity`]);
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.value, "correct");
+    assert.equal(output.url, `${baseUrl}/v1/main.mjs#identity`);
+    assert.equal(output.main, true);
+  });
+
+  it("preserves a remote entry's exact query, fragment, and arguments after --", async () => {
+    const target = `${baseUrl}/identity.mjs?value=%23%3F#identity`;
+    const scriptArgs = ["--reload", "--clear-cache", `${baseUrl}/not-main.mjs`];
+    const result = await run([cliPath.pathname, "--", target, ...scriptArgs]);
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.url, target);
+    assert.equal(output.main, true);
+    assert.deepEqual(output.argv, scriptArgs);
+    assert.deepEqual(requests, ["/identity.mjs?value=%23%3F"]);
+  });
+
+  it("does not mistake an HTTP-valued Node option for the remote entry", async () => {
+    const result = await run([cliPath.pathname, "--title", `${baseUrl}/not-main.mjs`, `${baseUrl}/entry.mjs`]);
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.url, `${baseUrl}/v1/main.mjs`);
+    assert.equal(output.main, true);
+    assert.ok(!requests.includes("/not-main.mjs"));
+  });
+
+  it("leaves HTTP arguments in eval mode untouched without selecting a remote main", async () => {
+    const target = `${baseUrl}/entry.mjs`;
+    const result = await run([cliPath.pathname, "--eval", 'console.log(JSON.stringify({ argv: process.argv.slice(1), main: process.env.URL_IMPORT_MAIN }));', "--", target]);
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output.argv, [target]);
+    assert.equal(output.main, undefined);
+    assert.deepEqual(requests, []);
   });
 
   it("downloads each module only once between resolve and load with reload enabled", async () => {
