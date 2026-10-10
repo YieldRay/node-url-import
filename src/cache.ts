@@ -1,10 +1,10 @@
 import process from "node:process";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { homedir, platform } from "node:os";
-import { MAX_REDIRECTS } from "./constants.ts";
+import { MAX_REDIRECTS, isHttpUrl } from "./constants.ts";
 
 function defaultDenoDir(): string {
   if (process.env.DENO_DIR) return process.env.DENO_DIR;
@@ -52,9 +52,15 @@ interface DenoCacheMetadata {
 /** Deno hashes pathname + query; fragments identify modules, not HTTP responses. */
 export function cachePaths(url: string): CachePaths {
   const parsed = new URL(url);
-  const hash = createHash("sha256").update(parsed.pathname + parsed.search).digest("hex");
-  const host = parsed.hostname.replaceAll(":", "_") + (parsed.port ? `_PORT${parsed.port}` : "");
-  const dir = join(CACHE_DIR, parsed.protocol.slice(0, -1), host);
+  parsed.hash = "";
+  // URL.search is empty for both an absent query and a bare ?. Deno's cache
+  // distinguishes them, so retain that delimiter when hashing the resource.
+  const query = parsed.href.includes("?") ? parsed.search || "?" : "";
+  const hash = createHash("sha256").update(parsed.pathname + query).digest("hex");
+  // Deno 2.9.7 escapes host underscores and reserves _port_ for explicit ports.
+  const host = parsed.hostname.replaceAll("_", "%5f") + (parsed.port ? `_port_${parsed.port}` : "");
+  const authority = host.length > 250 ? `#${createHash("sha256").update(parsed.host).digest("hex")}` : host;
+  const dir = join(CACHE_DIR, parsed.protocol.slice(0, -1), authority);
   return { dir, file: join(dir, hash) };
 }
 
@@ -71,7 +77,11 @@ export function decodeModuleSource(bytes: Uint8Array, url: string, contentType: 
   if (contentType.toLowerCase().includes("application/wasm") || new URL(url).pathname.endsWith(".wasm")) {
     return bytes;
   }
-  return new TextDecoder().decode(bytes);
+  const charset = /(?:^|;)\s*charset\s*=\s*(?:"([^"]*)"|'([^']*)'|([^;\s]*))/i.exec(contentType);
+  // Deno defaults remote files to UTF-8, decodes with the declared WHATWG
+  // charset without BOM sniffing, then removes one decoded leading BOM.
+  const text = new TextDecoder(charset ? charset[1] ?? charset[2] ?? charset[3] : "utf-8", { ignoreBOM: true }).decode(bytes);
+  return text.startsWith("\uFEFF") ? text.slice(1) : text;
 }
 
 function isMetadata(value: unknown): value is DenoCacheMetadata {
@@ -91,17 +101,22 @@ function withoutFragment(url: string): string {
 export function readCache(url: string, depth = 0): CacheEntry | null {
   if (depth > MAX_REDIRECTS) return null;
   try {
+    url = new URL(url).href;
     const raw = readFileSync(cachePaths(url).file);
     const metadataOffset = raw.lastIndexOf(META_MARKER);
     if (metadataOffset === -1) return null;
     const metadata: unknown = JSON.parse(raw.subarray(metadataOffset + META_MARKER.length).toString("utf8"));
     if (!isMetadata(metadata) || withoutFragment(metadata.url) !== withoutFragment(url)) return null;
+    // Deno 2.9.7 may cache unsuccessful responses as body-less 404 entries.
+    if ("x-deno-not-found" in metadata.headers) return null;
 
     // A Location header distinguishes redirect stubs from valid empty modules.
     const location = metadata.headers.location;
-    if (location) {
+    if (location !== undefined) {
+      if (!location) return null;
+      // Deno joins Location directly: absent fragments are not inherited.
       const target = new URL(location, url);
-      if (!location.includes("#")) target.hash = new URL(url).hash;
+      if (!isHttpUrl(target.href)) return null;
       const entry = readCache(target.href, depth + 1);
       return entry ? { ...entry, url, redirectChain: [url, ...entry.redirectChain] } : null;
     }
@@ -127,7 +142,7 @@ export function readCache(url: string, depth = 0): CacheEntry | null {
  */
 export function writeFileAtomicSync(path: string, source: ModuleSource): void {
   let target = path;
-  let mode = 0o666;
+  let mode: number | undefined;
   try {
     target = realpathSync(path);
     mode = statSync(target).mode & 0o777;
@@ -138,8 +153,11 @@ export function writeFileAtomicSync(path: string, source: ModuleSource): void {
   const temporaryPath = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(temporaryPath, "wx", mode);
+    descriptor = openSync(temporaryPath, "wx", mode ?? 0o666);
     writeFileSync(descriptor, source);
+    // open() applies umask even when given an existing mode. Restore that mode
+    // explicitly, while new files still respect the caller's umask.
+    if (mode !== undefined) fchmodSync(descriptor, mode);
     fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = undefined;
@@ -160,7 +178,7 @@ export function writeCache(
   const writeEntry = (url: string, bytes: Uint8Array, headers: Record<string, string>): void => {
     const { dir, file } = cachePaths(url);
     mkdirSync(dir, { recursive: true });
-    const metadata: DenoCacheMetadata = { headers, url: withoutFragment(url), time: Math.floor(Date.now() / 1000) };
+    const metadata: DenoCacheMetadata = { headers, url: new URL(url).href, time: Math.floor(Date.now() / 1000) };
     writeFileAtomicSync(file, Buffer.concat([bytes, META_MARKER, Buffer.from(JSON.stringify(metadata))]));
   };
 
@@ -170,9 +188,8 @@ export function writeCache(
   for (let index = redirectChain.length - 2; index >= 0; index--) {
     writeEntry(redirectChain[index]!, Buffer.alloc(0), {
       "content-length": "0",
-      // Raw Location retains an explicitly replaced or cleared fragment. When
-      // callers only supply a chain, omit inherited fragments from its stubs.
-      location: redirectLocations?.[index] ?? withoutFragment(redirectChain[index + 1]!),
+      // Preserve the exact target, including an explicit fragment or trailing #.
+      location: redirectLocations?.[index] ?? redirectChain[index + 1]!,
     });
   }
 }

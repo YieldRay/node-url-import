@@ -62,6 +62,22 @@ describe("synchronous fetch worker", () => {
     assert.equal(result.status, 0, result.stderr);
   });
 
+  it("normalizes cached URLs while preserving query and fragment identities", async () => {
+    const result = await runScript(`
+      import assert from "node:assert/strict";
+      const { writeCache, readCache } = await import(${JSON.stringify(cacheUrl)});
+      const { fetchModuleSync } = await import(${JSON.stringify(fetcherUrl)});
+      const url = "https://modules.test/mod.mjs?q=1#identity";
+      writeCache([url], "export default 42;", "application/javascript");
+      for (const variant of [url, "https://MODULES.test:443/mod.mjs?q=1#identity", "HTTPS://MODULES.test:443/mod.mjs?q=1#identity", "https://modules.test/dir/../mod.mjs?q=1#identity"]) {
+        assert.equal(readCache(variant).finalUrl, url);
+        assert.deepEqual(fetchModuleSync(variant), fetchModuleSync(url));
+      }
+      assert.equal(fetchModuleSync("https://modules.test/mod.mjs?q=1#other").finalUrl, "https://modules.test/mod.mjs?q=1#other");
+    `);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
   it("recovers after a normal network failure", async () => {
     const result = await runScript(`
       import assert from "node:assert/strict";

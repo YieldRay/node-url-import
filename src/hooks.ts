@@ -41,7 +41,7 @@ export function stripNpmSpecifier(specifier: string): string {
  */
 function getHttpParentUrl(parentURL: string | undefined): string | null {
   if (!parentURL) return null;
-  if (isHttpUrl(parentURL)) return parentURL;
+  if (isHttpUrl(parentURL)) return new URL(parentURL).href;
   const temporaryUrl = tmpEnabled ? tmpPathToUrl(parentURL) : null;
   if (temporaryUrl) return temporaryUrl;
   // CJS normalizes https://host/path into file:///cwd/https:/host/path.
@@ -93,8 +93,6 @@ type NextLoad = Parameters<LoadHookSync>[2];
 type ResolveHookAsync = (...args: Parameters<ResolveHookSync>) => Promise<ResolveFnOutput>;
 type LoadHookAsync = (...args: Parameters<LoadHookSync>) => Promise<LoadFnOutput>;
 
-/** CLI entry redirect: make the remote module the real import.meta.main entry. */
-const mainUrl = process.env.URL_IMPORT_MAIN;
 /** Bare packages map to this CDN; npm: still checks node_modules first. */
 const cdnBase = process.env.URL_IMPORT_CDN;
 /** A leading scheme excludes node:, data:, file:, npm: and other full URLs. */
@@ -110,7 +108,7 @@ function isRelativeSpecifier(specifier: string): boolean {
 
 /** Package names such as ws or @scope/pkg/sub, excluding paths and URL schemes. */
 function isBareSpecifier(specifier: string): boolean {
-  return !isRelativeSpecifier(specifier) && !SCHEME_RE.test(specifier);
+  return !specifier.startsWith("#") && !isRelativeSpecifier(specifier) && !SCHEME_RE.test(specifier);
 }
 
 /** Use require.resolve for npm: packages, anchored to a local caller or the project. */
@@ -121,19 +119,42 @@ function resolveLocalPackage(specifier: string, context: ResolveHookContext, nex
   return nextResolve(pathToFileURL(resolved).href, { ...context, parentURL });
 }
 
+function validateImportAttributes(url: string, format: string, context: ResolveHookContext | LoadHookContext): void {
+  const attributes = context.importAttributes ?? {};
+  for (const name of Object.keys(attributes)) {
+    if (name !== "type") {
+      throw Object.assign(new TypeError(`Unsupported import attribute "${name}" for ${url}`), { code: "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED" });
+    }
+  }
+  if (attributes.type !== undefined && attributes.type !== "json") {
+    throw Object.assign(new TypeError(`Unsupported import type "${attributes.type}" for ${url}`), { code: "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED" });
+  }
+  if (attributes.type === "json" && format !== "json") {
+    throw Object.assign(new TypeError(`Import type "json" is incompatible with ${format} for ${url}`), { code: "ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE" });
+  }
+  // Native require(JSON) omits importAttributes; ESM supplies an object even
+  // when empty. Conditions are user-configurable and cannot identify require.
+  if (format === "json" && attributes.type === undefined && context.importAttributes !== undefined) {
+    throw Object.assign(new TypeError(`JSON module ${url} requires an import attribute of type "json"`), { code: "ERR_IMPORT_ATTRIBUTE_MISSING" });
+  }
+}
+
 /**
  * Create a resolve hook. Sync fetch functions produce sync hooks; async fetch
  * functions produce async hooks. All HTTP paths follow redirects before Node
  * chooses a module identity, so its relative imports use the final URL.
  */
-export function createResolve(fetchFn: (url: string) => CacheEntry): ResolveHookSync;
-export function createResolve(fetchFn: (url: string) => Promise<CacheEntry>): ResolveHookAsync;
-export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>) {
+export function createResolve(fetchFn: (url: string) => CacheEntry, mainUrl?: string): ResolveHookSync;
+export function createResolve(fetchFn: (url: string) => Promise<CacheEntry>, mainUrl?: string): ResolveHookAsync;
+export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>, mainUrl?: string) {
+  const mainSpecifier = mainUrl ? pathToFileURL(resolvePath(mainUrl)).href : undefined;
+  let mainResolved = false;
   return function resolve(specifier: string, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput | Promise<ResolveFnOutput> {
     // Direct URLs, relative imports, CDN packages and the CLI entry share this path.
     const resolveHttp = (url: string): ResolveFnOutput | Promise<ResolveFnOutput> => {
       const handleFetched = (entry: CacheEntry): ResolveFnOutput => {
         const format = inferFormat(entry.finalUrl, entry.contentType);
+        validateImportAttributes(entry.finalUrl, format, context);
         if (tmpEnabled) {
           const temporaryPath = urlToTmpPath(entry.finalUrl, entry.contentType);
           writeTmpFile(temporaryPath, entry.source);
@@ -146,8 +167,12 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
       return entry instanceof Promise ? entry.then(handleFetched) : handleFetched(entry);
     };
 
-    // Node resolves the placeholder entry without a parentURL.
-    if (mainUrl && !context.parentURL && !isHttpUrl(specifier)) return resolveHttp(mainUrl);
+    // Redirect only this process's exact placeholder entry, never another
+    // parentless resolve (for example a Worker entry or a later preload).
+    if (mainUrl && !mainResolved && !context.parentURL && specifier === mainSpecifier) {
+      mainResolved = true;
+      return resolveHttp(mainUrl);
+    }
 
     // Installed npm: packages stay local; only MODULE_NOT_FOUND triggers a CDN fallback.
     if (specifier.startsWith("npm:")) {
@@ -187,7 +212,9 @@ export function createLoad(fetchFn: (url: string) => CacheEntry | Promise<CacheE
     pendingLoads.delete(url);
     const handleFetched = (entry: CacheEntry): LoadFnOutput => {
       verifyModuleLock(entry);
-      return { shortCircuit: true, format: inferFormat(entry.finalUrl, entry.contentType), source: entry.source };
+      const format = inferFormat(entry.finalUrl, entry.contentType);
+      validateImportAttributes(entry.finalUrl, format, context);
+      return { shortCircuit: true, format, source: entry.source };
     };
     const entry = cached ?? fetchFn(url);
     return entry instanceof Promise ? entry.then(handleFetched) : handleFetched(entry);

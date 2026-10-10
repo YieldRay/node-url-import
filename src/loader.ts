@@ -13,5 +13,15 @@ import { fetchModule } from "./fetch.ts";
 
 export const importMetaUrl = import.meta.url;
 
-export const resolve = createResolve(fetchModule);
+let resolveHook = createResolve(fetchModule);
 export const load = createLoad(fetchModule);
+
+export function initialize(data: { mainUrl?: string } = {}): void {
+  resolveHook = createResolve(fetchModule, data.mainUrl);
+}
+
+// Node captures exported hook functions before initialize() runs. Keep that
+// function identity stable while initialization configures its delegate.
+export function resolve(...args: Parameters<typeof resolveHook>) {
+  return resolveHook(...args);
+}

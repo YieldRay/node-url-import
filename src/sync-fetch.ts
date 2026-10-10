@@ -12,8 +12,8 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { readCache } from "./cache.ts";
 import type { CacheEntry } from "./cache.ts";
-import { verifyModuleLock } from "./lock.ts";
-import { FETCH_TIMEOUT_MS } from "./constants.ts";
+import { resolveLockRedirects, verifyModuleLock } from "./lock.ts";
+import { FETCH_TIMEOUT_MS, MAX_REDIRECTS, isHttpUrl } from "./constants.ts";
 
 let worker: Worker | null = null;
 
@@ -49,11 +49,16 @@ type WorkerResponse = { entry: CacheEntry } | { error: string };
 export function fetchModuleSync(url: string, options: SyncFetchOptions = {}): CacheEntry {
   const timeoutMs = options.timeoutMs ?? FETCH_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("The fetch timeout must be positive and finite");
+  url = new URL(url).href;
+  if (!isHttpUrl(url)) throw new TypeError(`Expected an HTTP(S) module URL: ${url}`);
   if (process.env.URL_IMPORT_RELOAD !== "1") {
-    const cached = readCache(url);
+    const lockedChain = resolveLockRedirects(url);
+    const cached = readCache(lockedChain.at(-1)!);
     if (cached) {
-      verifyModuleLock(cached);
-      return cached;
+      const entry = { ...cached, url, redirectChain: [...lockedChain.slice(0, -1), ...cached.redirectChain] };
+      if (entry.redirectChain.length > MAX_REDIRECTS + 1) throw new Error(`Too many redirects fetching ${url}`);
+      verifyModuleLock(entry);
+      return entry;
     }
   }
 

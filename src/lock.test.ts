@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import process from "node:process";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { hashSource } from "./lock.ts";
@@ -48,6 +48,7 @@ function runScript(code: string, extraEnv: Record<string, string> = {}) {
 const cacheUrl = new URL("./cache.ts", import.meta.url).href;
 const fetchUrl = new URL("./fetch.ts", import.meta.url).href;
 const syncFetchUrl = new URL("./sync-fetch.ts", import.meta.url).href;
+const lockUrl = new URL("./lock.ts", import.meta.url).href;
 
 function writeLock(data: object): void {
   writeFileSync(join(workspace, "deno.lock"), JSON.stringify({ version: "5", ...data }));
@@ -160,22 +161,108 @@ describe("lock file", () => {
     assert.deepEqual(Object.keys(readLock().remote).sort(), urls.sort());
   });
 
-  it("rejects changed redirect targets without mutating a frozen lock", async () => {
-    const start = "https://lock.test/moving";
-    const original = "https://lock.test/original.mjs";
+  it("uses Deno's recorded redirects instead of newer cached targets", async () => {
+    const start = "https://lock.test/moving#entry";
+    const original = "https://lock.test/original.mjs#locked";
     const changed = "https://lock.test/changed.mjs";
     const source = "export default 1;";
-    writeLock({ redirects: { [start]: original }, remote: { [original]: hashSource(source), [changed]: hashSource(source) } });
+    writeLock({ redirects: { [start]: original }, remote: { [original]: hashSource(source) } });
     const previous = readFileSync(join(workspace, "deno.lock"), "utf8");
+    for (const frozen of ["0", "1"]) {
+      const result = await runScript(`
+        import assert from "node:assert/strict";
+        const { writeCache } = await import(${JSON.stringify(cacheUrl)});
+        const { fetchModule } = await import(${JSON.stringify(fetchUrl)});
+        const { fetchModuleSync } = await import(${JSON.stringify(syncFetchUrl)});
+        writeCache([${JSON.stringify(original)}], ${JSON.stringify(source)}, "application/javascript");
+        writeCache([${JSON.stringify(start)}, ${JSON.stringify(changed)}], "export default 999;", "application/javascript");
+        const sync = fetchModuleSync(${JSON.stringify(start)});
+        const async = await fetchModule(${JSON.stringify(start)});
+        assert.equal(sync.finalUrl, ${JSON.stringify(original)});
+        assert.deepEqual(async, sync);
+        assert.deepEqual(sync.redirectChain, [${JSON.stringify(start)}, ${JSON.stringify(original)}]);
+      `, { URL_IMPORT_FROZEN: frozen });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(join(workspace, "deno.lock"), "utf8"), previous);
+    }
+  });
+
+  it("records full URL fragments and sorted remote keys in Deno v5 format", async () => {
+    const result = await runScript(`
+      const { writeCache } = await import(${JSON.stringify(cacheUrl)});
+      const { fetchModuleSync } = await import(${JSON.stringify(syncFetchUrl)});
+      const chain = ["https://lock.test/z-start#entry", "https://lock.test/middle#next", "https://lock.test/z-final.mjs#final"];
+      writeCache(chain, "export default 1;", "application/javascript");
+      fetchModuleSync(chain[0]);
+      writeCache(["https://lock.test/a.mjs#other"], "export default 1;", "application/javascript");
+      fetchModuleSync("https://lock.test/a.mjs#other");
+    `);
+    assert.equal(result.status, 0, result.stderr);
+    const lock = readLock();
+    assert.equal(lock.version, "5");
+    assert.deepEqual(lock.redirects, {
+      "https://lock.test/middle#next": "https://lock.test/z-final.mjs#final",
+      "https://lock.test/z-start#entry": "https://lock.test/middle#next",
+    });
+    assert.deepEqual(Object.keys(lock.remote), ["https://lock.test/a.mjs#other", "https://lock.test/z-final.mjs#final"]);
+  });
+
+  it("ignores frozen mode when no lock file is enabled, like Deno --no-lock", async () => {
     const result = await runScript(`
       import assert from "node:assert/strict";
       const { writeCache } = await import(${JSON.stringify(cacheUrl)});
       const { fetchModuleSync } = await import(${JSON.stringify(syncFetchUrl)});
-      writeCache([${JSON.stringify(start)}, ${JSON.stringify(changed)}], ${JSON.stringify(source)}, "application/javascript");
-      assert.throws(() => fetchModuleSync(${JSON.stringify(start)}));
-    `, { URL_IMPORT_FROZEN: "1" });
+      writeCache(["https://lock.test/unlocked.mjs"], "export default 42;", "application/javascript");
+      assert.equal(fetchModuleSync("https://lock.test/unlocked.mjs").source, "export default 42;");
+    `, { URL_IMPORT_LOCK: "", URL_IMPORT_FROZEN: "1" });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(readFileSync(join(workspace, "deno.lock"), "utf8"), previous);
+  });
+
+  it("serializes concurrent writers using symlink aliases of the same lock file", async () => {
+    const path = join(workspace, "deno.lock");
+    const alias = join(workspace, "alias.lock");
+    writeLock({ remote: {}, workspace: { padding: " ".repeat(256 * 1024) } });
+    symlinkSync(path, alias);
+    const result = await runScript(`
+      import assert from "node:assert/strict";
+      import { Worker } from "node:worker_threads";
+      import { setTimeout } from "node:timers/promises";
+      const barrier = new Int32Array(new SharedArrayBuffer(8));
+      const workers = Array.from({ length: 4 }, (_, id) => new Worker(\`
+        const { workerData } = await import("node:worker_threads");
+        const { verifyLock } = await import(workerData.lockUrl);
+        const barrier = new Int32Array(workerData.barrier);
+        Atomics.add(barrier, 0, 1);
+        Atomics.wait(barrier, 1, 0);
+        for (let index = 0; index < 16; index++) {
+          verifyLock("https://lock.test/alias-" + workerData.id + "-" + index + ".mjs", "export default 42;");
+        }
+      \`, {
+        eval: true, execArgv: [],
+        env: { ...process.env, URL_IMPORT_LOCK: id % 2 ? ${JSON.stringify(alias)} : ${JSON.stringify(path)} },
+        workerData: { id, barrier: barrier.buffer, lockUrl: ${JSON.stringify(lockUrl)} },
+      }));
+      const completions = workers.map(worker => new Promise((resolve, reject) => {
+        worker.on("error", reject);
+        worker.on("exit", code => code === 0 ? resolve() : reject(new Error("Worker failed")));
+      }));
+      try {
+        const deadline = Date.now() + 5_000;
+        while (Atomics.load(barrier, 0) < workers.length && Date.now() < deadline) await setTimeout(5);
+        assert.equal(Atomics.load(barrier, 0), workers.length);
+        Atomics.store(barrier, 1, 1);
+        Atomics.notify(barrier, 1);
+        await Promise.all(completions);
+      } finally {
+        Atomics.store(barrier, 1, 1);
+        Atomics.notify(barrier, 1);
+        await Promise.all(workers.map(worker => worker.terminate()));
+      }
+    `);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(Object.keys(readLock().remote).length, 64);
+    assert.equal(lstatSync(alias).isSymbolicLink(), true);
+    assert.deepEqual(readFileSync(alias), readFileSync(path));
   });
 
   it("does not replace malformed locks with a new empty lock", async () => {

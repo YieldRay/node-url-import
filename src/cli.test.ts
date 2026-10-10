@@ -1,8 +1,9 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import process from "node:process";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 const fixtureDir = mkdtempSync(join(tmpdir(), "node-url-import-cli-test-"));
@@ -231,16 +232,19 @@ describe("CLI: own-flag to env translation", () => {
     assert.equal(env.LOCK, resolvePath("deno.lock"));
   });
 
-  it("allows explicitly disabling inherited frozen mode", () => {
-    const result = runCli(["--frozen=false", dumpScript], { URL_IMPORT_FROZEN: "1" });
-    assert.equal(result.status, 0, result.stderr);
-    assert.notEqual(JSON.parse(result.stdout).env.FROZEN, "1");
+  it("rejects unsupported negative and boolean-valued options", () => {
+    for (const option of ["--no-cdn", "--cdn=false", "--no-frozen", "--frozen=false", "--reload=true", "--tmp=false"]) {
+      assert.notEqual(runCli([option, dumpScript]).status, 0);
+    }
   });
 
-  it("allows explicitly disabling an inherited CDN", () => {
-    const result = runCli(["--cdn=false", dumpScript], { URL_IMPORT_CDN: "https://example.test/" });
+  it("preserves inherited settings without enabling a lock for frozen alone", () => {
+    const result = runCli([dumpScript], { URL_IMPORT_FROZEN: "1", URL_IMPORT_CDN: "https://example.test/", URL_IMPORT_LOCK: "" });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).env.CDN, undefined);
+    const output: Dump = JSON.parse(result.stdout);
+    assert.equal(output.env.FROZEN, "1");
+    assert.equal(output.env.CDN, "https://example.test/");
+    assert.equal(output.env.LOCK, "");
   });
 
   it("rejects missing option values before the script", () => {
@@ -249,7 +253,7 @@ describe("CLI: own-flag to env translation", () => {
 
   it("lets the last CDN option determine the selected base", () => {
     assert.equal(runDump(["--cdn=https://example.test/", "--cdn"]).env.CDN, "https://esm.sh/");
-    assert.equal(runDump(["--cdn=https://example.test/", "--no-cdn"]).env.CDN, undefined);
+    assert.equal(runDump(["--cdn", "--cdn=https://example.test/"]).env.CDN, "https://example.test/");
   });
 
   it("rejects non-HTTP and ambiguous CDN bases", () => {
@@ -392,6 +396,48 @@ describe("CLI: --cdn bare-specifier resolution", () => {
 });
 
 describe("CLI: exit code propagation", () => {
+  it("preserves the target's signal exit status", { skip: process.platform === "win32" }, () => {
+    const result = runCli(["--eval", 'process.kill(process.pid, "SIGTERM");']);
+    assert.equal(result.status, null);
+    assert.equal(result.signal, "SIGTERM");
+  });
+
+  it("forwards termination signals to the target instead of orphaning it", { skip: process.platform === "win32" }, async () => {
+    const scriptPath = join(fixtureDir, "signal.mjs");
+    const sentinelPath = join(fixtureDir, "terminated");
+    writeFileSync(scriptPath, `
+      import { writeFileSync } from "node:fs";
+      process.on("SIGTERM", () => { writeFileSync(${JSON.stringify(sentinelPath)}, "stopped"); process.exit(0); });
+      console.log(process.pid);
+      setInterval(() => {}, 1000);
+    `);
+    const child = spawn(process.execPath, ["src/cli.ts", scriptPath], {
+      env: { ...process.env, DENO_DIR: join(fixtureDir, "deno") },
+      stdio: ["ignore", "pipe", "pipe"], timeout: 5_000, killSignal: "SIGKILL",
+    });
+    const completed = new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("exit", (status, signal) => resolve({ status, signal }));
+    });
+    let targetPid: number | undefined;
+    try {
+      assert.ok(child.stdout);
+      const [output] = await once(child.stdout, "data", { signal: AbortSignal.timeout(3_000) });
+      targetPid = Number(String(output).trim());
+      assert.ok(Number.isInteger(targetPid) && targetPid > 0);
+      child.kill("SIGTERM");
+      const result = await completed;
+      assert.equal(result.status, 0);
+      assert.equal(result.signal, null);
+      assert.equal(readFileSync(sentinelPath, "utf8"), "stopped");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (targetPid) {
+        try { process.kill(targetPid, "SIGKILL"); } catch { /* Target already exited. */ }
+      }
+    }
+  });
+
   it("should propagate a non-zero exit code from the target script", () => {
     const exitScript = join(fixtureDir, "exit.mjs");
     writeFileSync(exitScript, "process.exit(3);\n", "utf-8");

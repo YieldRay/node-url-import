@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import process from "node:process";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { constants as osConstants } from "node:os";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { DEFAULT_CDN, NAME, isHttpUrl } from "./constants.ts";
@@ -37,15 +38,11 @@ function consumeOptions(args: string[]) {
     const name = separator === -1 ? argument : argument.slice(0, separator);
     const value = separator === -1 ? undefined : argument.slice(separator + 1);
     if (ownNames.has(name)) {
-      if (name === "--cdn" && (value === undefined || value === "true" || value === "false")) customCdn = undefined;
-      if (name === "--cdn" && value !== undefined && value !== "true" && value !== "false") {
+      if (name === "--cdn" && value !== undefined) {
         customCdn = value;
         ownArgs.push("--cdn");
-      } else if (name !== "--lock-file" && value !== undefined) {
-        if (value !== "true" && value !== "false") throw new TypeError(`Invalid boolean option: ${argument}`);
-        const canonicalName = name === "-h" ? "help" : name.slice(2);
-        ownArgs.push(value === "true" ? `--${canonicalName}` : `--no-${canonicalName}`);
       } else {
+        if (name === "--cdn") customCdn = undefined;
         ownArgs.push(argument);
         if (name === "--lock-file" && value === undefined) {
           const next = args[++index];
@@ -53,9 +50,6 @@ function consumeOptions(args: string[]) {
           ownArgs.push(next);
         }
       }
-    } else if (name.startsWith("--no-") && ownNames.has(`--${name.slice(5)}`)) {
-      if (name === "--no-cdn") customCdn = undefined;
-      ownArgs.push(argument);
     } else {
       return { ownArgs, nodeArgs: args.slice(index), customCdn };
     }
@@ -64,7 +58,7 @@ function consumeOptions(args: string[]) {
 }
 
 const { ownArgs, nodeArgs, customCdn } = consumeOptions(process.argv.slice(2));
-const { values } = parseArgs({ args: ownArgs, options: ownOptions, strict: true, allowNegative: true });
+const { values } = parseArgs({ args: ownArgs, options: ownOptions, strict: true });
 const cdnBase = values.cdn ? customCdn ?? DEFAULT_CDN : undefined;
 
 // No entry is required: Node can evaluate code, read stdin, or start its REPL.
@@ -132,27 +126,45 @@ for (let index = 0; index < nodeArgs.length; index++) {
 }
 if (Object.keys(mainCandidates).length) env.URL_IMPORT_MAIN_CANDIDATES = JSON.stringify(mainCandidates);
 for (const [option, variable] of [["tmp", "URL_IMPORT_TMP"], ["reload", "URL_IMPORT_RELOAD"], ["frozen", "URL_IMPORT_FROZEN"]] as const) {
-  if (values[option] !== undefined) env[variable] = values[option] ? "1" : "0";
+  if (values[option]) env[variable] = "1";
 }
 if (values["lock-file"]) {
   env.URL_IMPORT_LOCK = resolve(values["lock-file"]);
 } else if (values.lock) {
   env.URL_IMPORT_LOCK = resolve("deno.lock");
-} else if (values.lock === false) {
-  delete env.URL_IMPORT_LOCK;
 }
-if (env.URL_IMPORT_FROZEN === "1" && !env.URL_IMPORT_LOCK) env.URL_IMPORT_LOCK = resolve("deno.lock");
+if (values.frozen && !env.URL_IMPORT_LOCK) env.URL_IMPORT_LOCK = resolve("deno.lock");
 if (cdnBase) {
   const parsed = new URL(cdnBase);
   if (!isHttpUrl(parsed.href) || parsed.search || parsed.hash) throw new TypeError("The CDN base must be an HTTP(S) URL without query or fragment");
   env.URL_IMPORT_CDN = parsed.href.endsWith("/") ? parsed.href : parsed.href + "/";
-} else if (values.cdn === false) {
-  delete env.URL_IMPORT_CDN;
 }
 
-const result = spawnSync(process.execPath, ["--import", registerImportMetaUrl, ...nodeArgs], {
+const child = spawn(process.execPath, ["--import", registerImportMetaUrl, ...nodeArgs], {
   stdio: "inherit",
   env,
 });
 
-process.exit(result.status ?? 1);
+// Keep the wrapper responsive to process-manager and terminal signals while
+// Node runs. A target may handle a signal and exit normally; wait for its result.
+const signals = process.platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] as const : ["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"] as const;
+const signalHandlers = new Map<NodeJS.Signals, () => void>();
+for (const signal of signals) {
+  const forward = (): void => { child.kill(signal); };
+  signalHandlers.set(signal, forward);
+  process.on(signal, forward);
+}
+
+child.once("error", (error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});
+child.once("close", (code, signal) => {
+  for (const [name, handler] of signalHandlers) process.removeListener(name, handler);
+  if (signal && process.platform !== "win32") {
+    // Re-raise after removing our handlers so callers observe the same signal.
+    process.kill(process.pid, signal);
+  } else {
+    process.exitCode = signal ? 128 + osConstants.signals[signal] : code ?? 1;
+  }
+});

@@ -2,7 +2,7 @@ import process from "node:process";
 import { decodeModuleSource, readCache, writeCache } from "./cache.ts";
 import type { CacheEntry } from "./cache.ts";
 import { FETCH_TIMEOUT_MS, NAME, MAX_REDIRECTS, isHttpUrl } from "./constants.ts";
-import { verifyModuleLock } from "./lock.ts";
+import { resolveLockRedirects, verifyModuleLock } from "./lock.ts";
 import { downloadAdd, downloadBegin, downloadDone } from "./progress.ts";
 
 const reload: boolean = process.env.URL_IMPORT_RELOAD === "1";
@@ -27,11 +27,14 @@ export async function fetchModule(url: string, options: FetchOptions = {}): Prom
   signal.throwIfAborted();
   const normalizedUrl = new URL(url).href;
   if (!isHttpUrl(normalizedUrl)) throw new TypeError(`Expected an HTTP(S) module URL: ${url}`);
-  const cached = reload ? null : readCache(normalizedUrl);
+  const lockedChain = resolveLockRedirects(normalizedUrl);
+  const cached = reload ? null : readCache(lockedChain.at(-1)!);
 
   if (cached) {
-    verifyModuleLock(cached);
-    return cached;
+    const entry = { ...cached, url: normalizedUrl, redirectChain: [...lockedChain.slice(0, -1), ...cached.redirectChain] };
+    if (entry.redirectChain.length > MAX_REDIRECTS + 1) throw new Error(`Too many redirects fetching ${url}`);
+    verifyModuleLock(entry);
+    return entry;
   }
 
   downloadAdd();
@@ -40,12 +43,12 @@ export async function fetchModule(url: string, options: FetchOptions = {}): Prom
   // Mark the slot done even on error, so counters stay balanced and the
   // progress bar can clear (a failed fetch must not orphan a slot).
   try {
-    let currentUrl = normalizedUrl;
-    const redirectChain: string[] = [normalizedUrl];
+    let currentUrl = lockedChain.at(-1)!;
+    const redirectChain = [...lockedChain];
     const redirectLocations: string[] = [];
 
     // The terminal response needs one request after up to MAX_REDIRECTS hops.
-    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+    for (let redirects = lockedChain.length - 1; redirects <= MAX_REDIRECTS; redirects++) {
       const res = await fetch(currentUrl, {
         headers: { "User-Agent": NAME },
         redirect: "manual",
@@ -61,8 +64,7 @@ export async function fetchModule(url: string, options: FetchOptions = {}): Prom
         }
         if (redirects === MAX_REDIRECTS) throw new Error(`Too many redirects fetching ${url}`);
         const nextUrl = new URL(location, currentUrl);
-        // HTTP redirects inherit the request fragment unless Location replaces it.
-        if (!location.includes("#")) nextUrl.hash = new URL(currentUrl).hash;
+        // Match Deno's URL join: a Location without # drops the request fragment.
         if (!isHttpUrl(nextUrl.href)) throw new TypeError(`Unsupported redirect URL: ${nextUrl.href}`);
         currentUrl = nextUrl.href;
         redirectChain.push(currentUrl);
@@ -78,12 +80,14 @@ export async function fetchModule(url: string, options: FetchOptions = {}): Prom
       }
 
       const contentType = res.headers.get("content-type") || "application/javascript";
-      const source = decodeModuleSource(new Uint8Array(await res.arrayBuffer()), currentUrl, contentType);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const source = decodeModuleSource(bytes, currentUrl, contentType);
 
       signal.throwIfAborted();
       const entry = { source, contentType, url: normalizedUrl, finalUrl: currentUrl, redirectChain };
       verifyModuleLock(entry);
-      writeCache(redirectChain, source, contentType, redirectLocations);
+      // Locked hops are not HTTP responses; only publish the downloaded chain.
+      writeCache(redirectChain.slice(lockedChain.length - 1), bytes, contentType, redirectLocations);
       return entry;
     }
 

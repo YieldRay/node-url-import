@@ -10,10 +10,12 @@ import { mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, unlinkSy
 import { basename, dirname, join, resolve } from "node:path";
 import { writeFileAtomicSync } from "./cache.ts";
 import type { CacheEntry, ModuleSource } from "./cache.ts";
+import { MAX_REDIRECTS, isHttpUrl } from "./constants.ts";
 
 const LOCK_VERSION = "5";
 const lockPath = process.env.URL_IMPORT_LOCK ? resolve(process.env.URL_IMPORT_LOCK) : null;
-const frozen = process.env.URL_IMPORT_FROZEN === "1";
+// As in Deno --no-lock, frozen has no effect unless a lock file is enabled.
+const frozen = lockPath !== null && process.env.URL_IMPORT_FROZEN === "1";
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
 
 interface LockFileData {
@@ -88,7 +90,7 @@ function removeDeadOwner(directory: string): void {
  * A bounded wait also reports abandoned empty locks instead of hanging forever.
  */
 function acquireLock(path: string): () => void {
-  const directory = join(realpathSync(dirname(path)), `${basename(path)}.lock`);
+  const directory = `${path}.lock`;
   const owner = join(directory, `owner-${process.pid}-${randomUUID()}`);
   const deadline = Date.now() + 15_000;
   while (true) {
@@ -113,6 +115,19 @@ function acquireLock(path: string): () => void {
   }
 }
 
+function canonicalLockPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    return join(realpathSync(dirname(path)), basename(path));
+  }
+}
+
+function sortedRecord(record: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
+}
+
 /** Reload inside the filesystem lock so main-thread and worker snapshots cannot diverge. */
 function updateLock(update: (data: LockFileData) => void): void {
   if (!lockPath) return;
@@ -122,15 +137,23 @@ function updateLock(update: (data: LockFileData) => void): void {
   }
 
   mkdirSync(dirname(lockPath), { recursive: true });
-  const release = acquireLock(lockPath);
+  // Deno follows lockfile symlinks. All aliases must lock, read and replace the
+  // same target, not independently lock the names of their symlinks.
+  const target = canonicalLockPath(lockPath);
+  const release = acquireLock(target);
   try {
-    const data = loadLockFile(lockPath);
+    const data = loadLockFile(target);
     const previous = JSON.stringify(data);
     update(data);
     if (JSON.stringify(data) !== previous) {
       const { version, redirects, remote, ...preserved } = data;
-      const output = { version, ...(Object.keys(redirects).length ? { redirects } : {}), remote, ...preserved };
-      writeFileAtomicSync(lockPath, JSON.stringify(output, null, 2) + "\n");
+      const output = {
+        version,
+        ...(Object.keys(redirects).length ? { redirects: sortedRecord(redirects) } : {}),
+        ...(Object.keys(remote).length ? { remote: sortedRecord(remote) } : {}),
+        ...preserved,
+      };
+      writeFileAtomicSync(target, JSON.stringify(output, null, 2) + "\n");
     }
   } finally {
     release();
@@ -138,13 +161,27 @@ function updateLock(update: (data: LockFileData) => void): void {
 }
 
 function requireMutableLock(): void {
-  if (frozen) throw new Error("The lockfile is out of date. Rerun with `--frozen=false` to update it.");
+  if (frozen) throw new Error("The lockfile is out of date. Rerun without --frozen and with URL_IMPORT_FROZEN=0 to update it.");
 }
 
 function normalizeUrl(url: string): string {
-  const parsed = new URL(url);
-  parsed.hash = "";
-  return parsed.href;
+  return new URL(url).href;
+}
+
+/** Deno seeds its module graph with recorded redirects, even when reloading. */
+export function resolveLockRedirects(url: string): string[] {
+  const chain = [normalizeUrl(url)];
+  if (!lockPath) return chain;
+  const { redirects } = loadLockFile(lockPath);
+  while (true) {
+    const target = redirects[chain.at(-1)!];
+    if (target === undefined) return chain;
+    if (chain.length > MAX_REDIRECTS) throw new Error(`Too many locked redirects for ${url}`);
+    const normalized = normalizeUrl(target);
+    if (!isHttpUrl(normalized)) throw new TypeError(`Unsupported locked redirect URL: ${normalized}`);
+    if (chain.includes(normalized)) throw new Error(`Circular locked redirect for ${url}`);
+    chain.push(normalized);
+  }
 }
 
 function verifySource(data: LockFileData, url: string, source: ModuleSource): void {

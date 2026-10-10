@@ -2,6 +2,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { ResolveHookContext, LoadHookContext } from "node:module";
 import { resolve, load, inferFormat, createResolve } from "./hooks.ts";
+import { initialize, resolve as resolveLoader } from "./loader.ts";
+import { cachePaths, writeCache } from "./cache.ts";
+import { rmSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const defaultResolveContext: ResolveHookContext = {
   conditions: [],
@@ -72,6 +77,24 @@ describe("hooks.resolve (sync)", () => {
   });
 });
 
+describe("async loader initialization", () => {
+  it("configures the already captured resolve function without replacing it", async () => {
+    const url = "https://loader-initialize.test/main.mjs#entry";
+    const capturedResolve = resolveLoader;
+    writeCache([url], "export default 42;", "application/javascript");
+    try {
+      initialize({ mainUrl: url });
+      assert.equal(resolveLoader, capturedResolve);
+      const result = await capturedResolve(pathToFileURL(resolvePath(url)).href, defaultResolveContext,
+        () => assert.fail("The remote main must not reach native file resolution"));
+      assert.equal(result.url, url);
+    } finally {
+      initialize();
+      rmSync(cachePaths(url).dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("hooks.load (sync)", () => {
   it("should load HTTP URLs and return source", () => {
     const next = makeNextLoad();
@@ -89,14 +112,21 @@ describe("hooks.load (sync)", () => {
     assert.equal(next.wasCalled(), true);
   });
 
-  it("should load remote TypeScript module with module-typescript format", () => {
-    const next = makeNextLoad();
-    const result = load("https://deno.land/std@0.224.0/path/mod.ts", defaultLoadContext, next.fn);
-    assert.equal(result.shortCircuit, true);
-    assert.equal(result.format, "module-typescript");
-    assert.equal(typeof result.source, "string");
-    assert.ok((result.source as string).length > 0);
-    assert.equal(next.wasCalled(), false);
+  it("should load remote TypeScript module with module-typescript format", async () => {
+    const url = "https://typescript-load.test/mod.ts";
+    const source = "export const value: number = 42;";
+    writeCache([url], source, "text/typescript");
+    try {
+      const next = makeNextLoad();
+      const result = load(url, defaultLoadContext, next.fn);
+      assert.equal(result.shortCircuit, true);
+      assert.equal(result.format, "module-typescript");
+      assert.equal(result.source, source);
+      assert.equal(next.wasCalled(), false);
+      assert.equal((await import(url)).value, 42);
+    } finally {
+      rmSync(cachePaths(url).file, { force: true });
+    }
   });
 });
 

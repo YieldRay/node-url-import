@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import process from "node:process";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const requests: string[] = [];
 const server = createServer((request, response) => {
@@ -19,13 +20,17 @@ const server = createServer((request, response) => {
     response.writeHead(302, { Location: redirect }).end();
     return;
   }
-  response.setHeader("Content-Type", request.url === "/typed.cts" ? "text/typescript" : "application/javascript");
+  response.setHeader("Content-Type", request.url === "/typed.cts" ? "text/typescript" :
+    request.url === "/data.json" ? "application/json" : "application/javascript");
   const sources: Record<string, string> = {
     "/v1/main.mjs": 'import { value, location } from "./child.mjs"; console.log(JSON.stringify({ value, location, main: import.meta.main, url: import.meta.url }));',
     "/v2/child.mjs": 'export { default as value } from "./dep.mjs"; export const location = import.meta.url;',
     "/v2/dep.mjs": 'export default "correct";',
     "/v1/dep.mjs": 'export default "wrong";',
     "/reload.mjs": 'export default 42;',
+    "/data.json": '{"answer":42}',
+    "/json-code.mjs": 'globalThis.executedAsCode = true; export default 42;',
+    "/worker-main.mjs": 'import { Worker, isMainThread, parentPort } from "node:worker_threads"; if (isMainThread) { const worker = new Worker(new URL(process.argv[2])); worker.on("message", message => console.log(message)); } else { parentPort.postMessage("wrong-remote-worker"); }',
     "/identity.mjs?value=%23%3F": 'console.log(JSON.stringify({ url: import.meta.url, main: import.meta.main, argv: process.argv.slice(2) }));',
     "/cdn/node-url-import-uninstalled@2/sub": 'export default 73;',
     "/typed.cts": 'const value: number = 17; module.exports = value;',
@@ -96,7 +101,7 @@ describe("remote resolution", () => {
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.equal(output.value, "correct");
-    assert.equal(output.url, `${baseUrl}/v1/main.mjs#identity`);
+    assert.equal(output.url, `${baseUrl}/v1/main.mjs`);
     assert.equal(output.main, true);
   });
 
@@ -152,6 +157,76 @@ describe("remote resolution", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(Number(result.stdout), 73);
     assert.deepEqual(requests, ["/cdn/node-url-import-uninstalled@2/sub"]);
+  });
+
+  it("uses one canonical module identity for cached equivalent URLs", async () => {
+    for (const tmp of ["0", "1"]) {
+      const result = await run(["--import", registerUrl, "--input-type=module", "--eval", `
+        import assert from "node:assert/strict";
+        const { writeCache } = await import(${JSON.stringify(new URL("./cache.ts", import.meta.url).href)});
+        const url = "https://canonical.test/mod.mjs?q=1#identity";
+        writeCache([url], "export default {};", "application/javascript");
+        const first = await import(url);
+        for (const variant of ["https://CANONICAL.test:443/mod.mjs?q=1#identity", "HTTPS://canonical.test/mod.mjs?q=1#identity", "https://canonical.test/dir/../mod.mjs?q=1#identity"]) {
+          assert.equal(await import(variant), first);
+        }
+      `], { URL_IMPORT_TMP: tmp });
+      assert.equal(result.status, 0, result.stderr);
+    }
+  });
+
+  it("does not redirect local Worker entries to the remote CLI main", async () => {
+    const workerPath = join(workspace, "worker.mjs");
+    writeFileSync(workerPath, 'import { parentPort } from "node:worker_threads"; parentPort.postMessage("local-worker");');
+    for (const tmp of ["0", "1"]) {
+      const result = await run([cliPath.pathname, `${baseUrl}/worker-main.mjs`, pathToFileURL(workerPath).href], { URL_IMPORT_TMP: tmp });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), "local-worker");
+    }
+  });
+
+  it("keeps package #imports local with a CDN enabled", async () => {
+    const packagePath = join(workspace, "package");
+    mkdirSync(packagePath);
+    writeFileSync(join(packagePath, "package.json"), JSON.stringify({ type: "module", imports: { "#answer": "./answer.mjs" } }));
+    writeFileSync(join(packagePath, "answer.mjs"), "export default 42;");
+    const entryPath = join(packagePath, "main.mjs");
+    writeFileSync(entryPath, 'import answer from "#answer"; console.log(answer);');
+    const result = await run([cliPath.pathname, `--cdn=${baseUrl}/cdn/`, entryPath]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "42");
+    assert.deepEqual(requests, []);
+  });
+
+  it("enforces JSON import attributes without executing JavaScript as data", async () => {
+    for (const tmp of ["0", "1"]) {
+      const result = await run(["--import", registerUrl, "--input-type=module", "--eval", `
+        import assert from "node:assert/strict";
+        const url = ${JSON.stringify(`${baseUrl}/data.json`)};
+        await assert.rejects(import(url));
+        await assert.rejects(import(url, { with: { type: "javascript" } }));
+        await assert.rejects(import(url, { with: { extra: "unsupported", type: "json" } }));
+        assert.equal((await import(url, { with: { type: "json" } })).default.answer, 42);
+        await assert.rejects(import(${JSON.stringify(`${baseUrl}/json-code.mjs`)}, { with: { type: "json" } }));
+        assert.equal(globalThis.executedAsCode, undefined);
+      `], { URL_IMPORT_TMP: tmp });
+      assert.equal(result.status, 0, result.stderr);
+    }
+  });
+
+  it("distinguishes native require(JSON) from user-supplied require conditions", async () => {
+    const url = `${baseUrl}/data.json`;
+    for (const tmp of ["0", "1"]) {
+      const esm = await run(["--import", registerUrl, "--conditions=require", "--input-type=module", "--eval", `
+        import assert from "node:assert/strict";
+        await assert.rejects(import(${JSON.stringify(url)}));
+        assert.equal((await import(${JSON.stringify(url)}, { with: { type: "json" } })).default.answer, 42);
+      `], { URL_IMPORT_TMP: tmp });
+      assert.equal(esm.status, 0, esm.stderr);
+      const cjs = await run(["--import", registerUrl, "--conditions=import", "--eval", `console.log(require(${JSON.stringify(url)}).answer);`], { URL_IMPORT_TMP: tmp });
+      assert.equal(cjs.status, 0, cjs.stderr);
+      assert.equal(cjs.stdout.trim(), "42");
+    }
   });
 
   it("loads CommonJS TypeScript with a TypeScript content type", async () => {
