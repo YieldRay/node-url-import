@@ -19,6 +19,7 @@
 import process from "node:process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import type { ModuleSource } from "./cache.ts";
 
 const LOCK_VERSION = "5";
 
@@ -34,7 +35,7 @@ const frozen: boolean = process.env.URL_IMPORT_FROZEN === "1";
 let lockData: LockFileData | null = null;
 let dirty = false;
 
-export function hashSource(source: string): string {
+export function hashSource(source: ModuleSource): string {
   return createHash("sha256").update(source).digest("hex");
 }
 
@@ -107,7 +108,7 @@ export function recordRedirect(from: string, to: string): void {
 /**
  * Verify a fetched module's source against the lock file.
  */
-export function verifyLock(url: string, source: string): void {
+export function verifyLock(url: string, source: ModuleSource): void {
   if (!lockPath) return;
 
   const data = loadLockFile();

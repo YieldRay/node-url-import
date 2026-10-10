@@ -26,6 +26,7 @@ import { join, dirname, extname } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NAME } from "./constants.ts";
+import type { ModuleSource } from "./cache.ts";
 
 /** Root directory for tmp files: <system-tmp>/node-url-import/ */
 const TMP_ROOT = join(tmpdir(), NAME);
@@ -116,7 +117,7 @@ export function tmpPathToUrl(fileUrl: string): string | null {
 /**
  * Write module source to a tmp path, creating parent directories as needed.
  */
-export function writeTmpFile(tmpPath: string, source: string): void {
+export function writeTmpFile(tmpPath: string, source: ModuleSource): void {
   mkdirSync(dirname(tmpPath), { recursive: true });
   writeFileSync(tmpPath, source, "utf-8");
 }

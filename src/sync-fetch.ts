@@ -14,7 +14,7 @@ import {
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { readCache } from "./cache.ts";
-import type { CacheEntry } from "./cache.ts";
+import type { CacheEntry, ModuleSource } from "./cache.ts";
 
 // Lazy-initialized worker
 let worker: Worker | null = null;
@@ -49,10 +49,11 @@ function getWorker(): Worker {
 
 interface WorkerResponse {
   error?: string;
-  source?: string;
+  source?: ModuleSource;
   contentType?: string;
   url?: string;
   finalUrl?: string;
+  redirectChain?: string[];
 }
 
 /**
@@ -99,5 +100,6 @@ export function fetchModuleSync(url: string): CacheEntry {
     contentType: response.contentType!,
     url: response.url!,
     finalUrl: response.finalUrl!,
+    redirectChain: response.redirectChain!,
   };
 }

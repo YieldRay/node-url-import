@@ -11,6 +11,7 @@
 import { parentPort } from "node:worker_threads";
 import type { MessagePort } from "node:worker_threads";
 import { fetchModule } from "./fetch.ts";
+import type { ModuleSource } from "./cache.ts";
 
 interface FetchRequest {
   url: string;
@@ -20,10 +21,11 @@ interface FetchRequest {
 
 interface FetchResponse {
   error?: string;
-  source?: string;
+  source?: ModuleSource;
   contentType?: string;
   url?: string;
   finalUrl?: string;
+  redirectChain?: string[];
 }
 
 parentPort!.on("message", async (msg: FetchRequest) => {
@@ -38,6 +40,7 @@ parentPort!.on("message", async (msg: FetchRequest) => {
       contentType: result.contentType,
       url: result.url,
       finalUrl: result.finalUrl,
+      redirectChain: result.redirectChain,
     };
   } catch (err) {
     response = {

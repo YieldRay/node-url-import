@@ -8,7 +8,7 @@ describe("fetchModuleSync", () => {
   it("should fetch a module synchronously from esm.sh", () => {
     const result = fetchModuleSync("https://esm.sh/ms@2.1.3");
     assert.equal(typeof result.source, "string");
-    assert.ok(result.source.length > 0);
+    assert.ok(typeof result.source === "string" && result.source.length > 0);
     assert.ok(
       result.contentType.includes("javascript") ||
         result.contentType.includes("typescript"),
