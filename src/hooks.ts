@@ -93,7 +93,7 @@ type NextLoad = Parameters<LoadHookSync>[2];
 type ResolveHookAsync = (...args: Parameters<ResolveHookSync>) => Promise<ResolveFnOutput>;
 type LoadHookAsync = (...args: Parameters<LoadHookSync>) => Promise<LoadFnOutput>;
 
-/** Bare packages map to this CDN; npm: still checks node_modules first. */
+/** Bare packages check node_modules first, then fall back to this CDN; npm: falls back too. */
 const cdnBase = process.env.URL_IMPORT_CDN;
 /** A leading scheme excludes node:, data:, file:, npm: and other full URLs. */
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
@@ -191,9 +191,19 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
       throw new Error(`Cannot resolve "${specifier}": jsr: specifiers require --cdn=https://esm.sh/.`);
     }
     if (isHttpUrl(specifier)) return resolveHttp(specifier);
-    if (cdnBase && isBareSpecifier(specifier) && !isBuiltin(specifier)) return resolveHttp(cdnBase + specifier);
 
     const httpParent = getHttpParentUrl(context.parentURL);
+    if (cdnBase && isBareSpecifier(specifier) && !isBuiltin(specifier)) {
+      // node_modules first; only a missing package falls back to the CDN.
+      // ESM resolution reports ERR_MODULE_NOT_FOUND, CJS reports MODULE_NOT_FOUND.
+      const localContext = context.parentURL && !httpParent ? context : { ...context, parentURL: projectParentUrl() };
+      try {
+        return nextResolve(specifier, localContext);
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && (error.code === "MODULE_NOT_FOUND" || error.code === "ERR_MODULE_NOT_FOUND"))) throw error;
+        return resolveHttp(cdnBase + specifier);
+      }
+    }
     if (httpParent && isRelativeSpecifier(specifier)) return resolveHttp(new URL(specifier, httpParent).href);
     // Native package resolution cannot use an HTTP parent. Keep its import/
     // require conditions but anchor it to the local project's node_modules.

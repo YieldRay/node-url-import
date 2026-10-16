@@ -33,6 +33,8 @@ const server = createServer((request, response) => {
     "/worker-main.mjs": 'import { Worker, isMainThread, parentPort } from "node:worker_threads"; if (isMainThread) { const worker = new Worker(new URL(process.argv[2])); worker.on("message", message => console.log(message)); } else { parentPort.postMessage("wrong-remote-worker"); }',
     "/identity.mjs?value=%23%3F": 'console.log(JSON.stringify({ url: import.meta.url, main: import.meta.main, argv: process.argv.slice(2) }));',
     "/cdn/node-url-import-uninstalled@2/sub": 'export default 73;',
+    "/cdn/cdn-only-fixture": 'export default "cdn-fixture";',
+    "/bare-parent.mjs": 'import ts from "typescript"; console.log(JSON.stringify({ version: ts.version }));',
     "/typed.cts": 'const value: number = 17; module.exports = value;',
     "/npm-parent.mjs": 'import ts from "npm:typescript@6"; console.log(JSON.stringify({ version: ts.version }));',
     "/cjs/main.cjs": 'module.exports = require("./child.cjs");',
@@ -196,6 +198,28 @@ describe("remote resolution", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), "42");
     assert.deepEqual(requests, []);
+  });
+
+  it("resolves bare packages from node_modules before the CDN", async () => {
+    const packagePath = join(workspace, "package");
+    mkdirSync(join(packagePath, "node_modules", "installed-fixture"), { recursive: true });
+    writeFileSync(join(packagePath, "node_modules", "installed-fixture", "package.json"),
+      JSON.stringify({ name: "installed-fixture", type: "module", exports: { ".": "./main.mjs" } }));
+    writeFileSync(join(packagePath, "node_modules", "installed-fixture", "main.mjs"), 'export default "local";');
+    const entryPath = join(packagePath, "main.mjs");
+    writeFileSync(entryPath, 'import local from "installed-fixture"; import remote from "cdn-only-fixture"; console.log(JSON.stringify({ local, remote }));');
+    const result = await run([cliPath.pathname, `--cdn=${baseUrl}/cdn/`, entryPath]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { local: "local", remote: "cdn-fixture" });
+    assert.deepEqual(requests, ["/cdn/cdn-only-fixture"]);
+  });
+
+  it("lets remote modules use locally installed bare packages with a CDN enabled", async () => {
+    const result = await run(["--import", registerUrl, "--eval", `import(${JSON.stringify(`${baseUrl}/bare-parent.mjs`)});`],
+      { URL_IMPORT_CDN: `${baseUrl}/cdn/` });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(typeof JSON.parse(result.stdout).version, "string");
+    assert.deepEqual(requests, ["/bare-parent.mjs"]);
   });
 
   it("enforces JSON import attributes without executing JavaScript as data", async () => {

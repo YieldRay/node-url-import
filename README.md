@@ -32,7 +32,7 @@ node-url-import --lock --frozen ./app.mjs
 | `--lock-file <path>` | `URL_IMPORT_LOCK=<path>` | Use a custom lock path |
 | `--frozen` | `URL_IMPORT_FROZEN=1` | Reject lock changes |
 | `--tmp` | `URL_IMPORT_TMP=1` | Load readable local files; `import.meta.url` becomes a `file:` URL |
-| `--cdn[=<url>]` | `URL_IMPORT_CDN=<base/>` | Map bare packages to a CDN (default: `https://esm.sh/`) |
+| `--cdn[=<url>]` | `URL_IMPORT_CDN=<base/>` | Resolve missing bare packages via a CDN (default: `https://esm.sh/`) |
 | `--clear-cache` | — | Purge the shared remote cache |
 
 Boolean options are flag-only: boolean values and `--no-*` forms are unsupported. Set environment variables before registration; use `0` to disable inherited booleans, or unset CDN/lock variables to disable those settings.
@@ -65,10 +65,10 @@ import { parse } from "npm:@babel/parser@7";
 
 ### CDN, `jsr:`, and JSON
 
-`--cdn` maps bare package names instead of using `node_modules`. Custom HTTP(S) bases must omit query/fragment; a trailing `/` is added. Built-ins, paths, full URLs, and `#imports` are not CDN-mapped. `jsr:` requires an esm.sh base; ESM JSON requires `type: "json"`.
+`--cdn` checks `node_modules` first and resolves missing bare packages from a CDN. Custom HTTP(S) bases must omit query/fragment; a trailing `/` is added. Built-ins, paths, full URLs, and `#imports` are not CDN-mapped. `jsr:` requires an esm.sh base; ESM JSON requires `type: "json"`.
 
 ```js
-import { z } from "zod"; // --cdn → https://esm.sh/zod
+import { z } from "zod"; // --cdn → local zod, else https://esm.sh/zod
 import { encodeBase64 } from "jsr:@std/encoding@1.0.0/base64";
 import data from "https://example.com/data.json" with { type: "json" };
 ```

@@ -2,7 +2,7 @@
 
 import process from "node:process";
 import { spawn } from "node:child_process";
-import { constants as osConstants } from "node:os";
+import { constants as osConstants, platform } from "node:os";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { DEFAULT_CDN, NAME, isHttpUrl } from "./constants.ts";
@@ -67,6 +67,8 @@ if (values.help) {
   const y = (s: string) => styleText("yellow", s);
   const c = (s: string) => styleText("cyan", s);
   const b = (s: string) => styleText("bold", s);
+
+  const defaultCacheRoot = platform() === "darwin" ? "~/Library/Caches/deno" : platform() === "win32" ? "%LOCALAPPDATA%\\deno" : "~/.cache/deno";
   console.log(`
 ${b(NAME)} ${dim("—")} run Node.js scripts that import from HTTP(S) URLs
 
@@ -92,11 +94,11 @@ ${b("Options:")}
   ${y("--frozen")}                 Error if lock file is out of date ${dim("(use with --lock)")}
   ${y("--tmp")}                    Write fetched modules to a tmp dir with readable paths
                           ${dim("(modules see themselves as local files under /tmp/node-url-import/)")}
-  ${y("--cdn")}${dim("[=<url>]")}            Resolve bare specifiers via a CDN ${dim(`(e.g. ws → ${DEFAULT_CDN}ws)`)}
-                          ${dim(`(default: ${DEFAULT_CDN}; node built-ins stay local)`)}
+  ${y("--cdn")}${dim("[=<url>]")}            Resolve missing bare packages via a CDN ${dim(`(e.g. ws → ${DEFAULT_CDN}ws)`)}
+                          ${dim(`(default: ${DEFAULT_CDN}; node_modules first)`)}
 
 ${b("Environment:")}
-  ${y("DENO_DIR")}                 Deno cache root ${dim("(default: ~/Library/Caches/deno on macOS, ~/.cache/deno on Linux)")}
+  ${y("DENO_DIR")}                 Deno cache root ${dim(`(default: ${defaultCacheRoot})`)}
   ${y("URL_IMPORT_TMP=1")}         Same as --tmp
   ${y("URL_IMPORT_RELOAD=1")}      Same as --reload
   ${y("URL_IMPORT_LOCK")}${dim("=path")}     Same as --lock <file>

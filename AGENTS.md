@@ -45,7 +45,7 @@ Resolve chooses the final URL before Node assigns module identity; load reuses t
 
 - Sync hooks block only through `fetchModuleSync`. Worker startup resolves `.ts`/`.js` from `import.meta.url` with `execArgv: []`. Error callbacks cannot run during `Atomics.wait`; retain the 60-second bound and discard timed-out workers. Post results before notifying.
 - Resolve redirects before load, reusing `pendingLoads` even with reload. Preserve the CJS parent reconstruction regex for `file:///cwd/https:/host/...`.
-- `npm:` strips versions only for local `require.resolve`, anchored to a local caller or the working directory. Only `MODULE_NOT_FOUND` falls back to the CDN. Keep built-ins and `#imports` native.
+- `npm:` strips versions only for local `require.resolve`, anchored to a local caller or the working directory. Only `MODULE_NOT_FOUND` falls back to the CDN. Keep built-ins and `#imports` native. `--cdn` bare specifiers resolve natively first with the same anchoring; only module-not-found (`MODULE_NOT_FOUND`/`ERR_MODULE_NOT_FOUND`) falls back to the CDN.
 - Validate import attributes before publishing tmp files and when loading source. ESM JSON requires type `json`; native require(JSON) omits `context.importAttributes`. User-configurable `conditions` cannot identify require.
 - Tmp reverse mapping stores exact URLs, including query/fragment; synthetic filenames cannot recover relative-import bases.
 - Consume/delete `URL_IMPORT_MAIN` and `URL_IMPORT_MAIN_CANDIDATES` before creating Workers. Carry `mainUrl` as local hook/loader data; redirect only the exact parentless placeholder once.

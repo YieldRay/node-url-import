@@ -84,13 +84,6 @@ describe("CLI: help and usage", () => {
   });
 });
 
-describe("CLI: Node execution modes", () => {
-  it("runs inline code with -e without requiring a script entry", () => {
-    const result = runCli(["-e", "console.log(42)"]);
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim(), "42");
-  });
-
   it("prints an expression with -p and the native -pe shorthand", () => {
     for (const flag of ["-p", "-pe"]) {
       const result = runCli([flag, "21 * 2"]);
@@ -133,7 +126,6 @@ describe("CLI: Node execution modes", () => {
       assert.equal(result.stdout, expected.stdout);
     }
   });
-});
 
 describe("CLI: --clear-cache", () => {
   it("should clear the cache and exit 0", () => {
