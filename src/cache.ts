@@ -164,7 +164,7 @@ export function writeFileAtomicSync(path: string, source: ModuleSource): void {
   const temporaryPath = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(temporaryPath, "wx", mode ?? 0o666);
+    descriptor = openSync(temporaryPath, "wx", mode ?? (0o666 & ~process.umask()));
     writeFileSync(descriptor, source);
     // open() applies umask even when given an existing mode. Restore that mode
     // explicitly, while new files still respect the caller's umask.

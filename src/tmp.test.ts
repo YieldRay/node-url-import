@@ -42,7 +42,7 @@ afterEach(() => { rmSync(workspace, { recursive: true, force: true }); });
 function run(args: string[], extraEnv: Record<string, string> = {}) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(process.execPath, args, {
-      env: { ...process.env, DENO_DIR: join(workspace, "deno"), TMPDIR: workspace, URL_IMPORT_TMP: "1", ...extraEnv },
+      env: { ...process.env, FORCE_COLOR: "0", DENO_DIR: join(workspace, "deno"), TMPDIR: workspace, URL_IMPORT_TMP: "1", ...extraEnv },
       stdio: ["ignore", "pipe", "pipe"], timeout: 15_000,
     });
     let stdout = "";

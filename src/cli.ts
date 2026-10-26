@@ -141,6 +141,7 @@ if (cdnBase) {
   if (!isHttpUrl(parsed.href) || parsed.search || parsed.hash) throw new TypeError("The CDN base must be an HTTP(S) URL without query or fragment");
   env.URL_IMPORT_CDN = parsed.href.endsWith("/") ? parsed.href : parsed.href + "/";
 }
+if (!process.stdout.isTTY && !process.stderr.isTTY) env.FORCE_COLOR = "0";
 
 const child = spawn(process.execPath, ["--import", registerImportMetaUrl, ...nodeArgs], {
   stdio: "inherit",
