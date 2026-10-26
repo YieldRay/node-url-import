@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const requests: string[] = [];
 const server = createServer((request, response) => {
@@ -77,7 +77,7 @@ function run(args: string[], extraEnv: Record<string, string> = {}) {
 }
 
 const registerUrl = new URL("./register-hooks.ts", import.meta.url).href;
-const cliPath = new URL("./cli.ts", import.meta.url);
+const cliPath = fileURLToPath(new URL("./cli.ts", import.meta.url));
 
 describe("remote resolution", () => {
   it("resolves relative dependencies against every final redirect URL", async () => {
@@ -90,7 +90,7 @@ describe("remote resolution", () => {
   });
 
   it("uses the redirected HTTP URL as the true CLI entry point", async () => {
-    const result = await run([cliPath.pathname, `${baseUrl}/entry.mjs`]);
+    const result = await run([cliPath, `${baseUrl}/entry.mjs`]);
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.equal(output.value, "correct");
@@ -99,7 +99,7 @@ describe("remote resolution", () => {
   });
 
   it("lets Node select a remote entry after its own valued flags", async () => {
-    const result = await run([cliPath.pathname, "--reload", "--title", "cli-title", `${baseUrl}/entry.mjs#identity`]);
+    const result = await run([cliPath, "--reload", "--title", "cli-title", `${baseUrl}/entry.mjs#identity`]);
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.equal(output.value, "correct");
@@ -110,7 +110,7 @@ describe("remote resolution", () => {
   it("preserves a remote entry's exact query, fragment, and arguments after --", async () => {
     const target = `${baseUrl}/identity.mjs?value=%23%3F#identity`;
     const scriptArgs = ["--reload", "--clear-cache", `${baseUrl}/not-main.mjs`];
-    const result = await run([cliPath.pathname, "--", target, ...scriptArgs]);
+    const result = await run([cliPath, "--", target, ...scriptArgs]);
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.equal(output.url, target);
@@ -120,7 +120,7 @@ describe("remote resolution", () => {
   });
 
   it("does not mistake an HTTP-valued Node option for the remote entry", async () => {
-    const result = await run([cliPath.pathname, "--title", `${baseUrl}/not-main.mjs`, `${baseUrl}/entry.mjs`]);
+    const result = await run([cliPath, "--title", `${baseUrl}/not-main.mjs`, `${baseUrl}/entry.mjs`]);
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.equal(output.url, `${baseUrl}/v1/main.mjs`);
@@ -130,7 +130,7 @@ describe("remote resolution", () => {
 
   it("leaves HTTP arguments in eval mode untouched without selecting a remote main", async () => {
     const target = `${baseUrl}/entry.mjs`;
-    const result = await run([cliPath.pathname, "--eval", 'console.log(JSON.stringify({ argv: process.argv.slice(1), main: process.env.URL_IMPORT_MAIN }));', "--", target]);
+    const result = await run([cliPath, "--eval", 'console.log(JSON.stringify({ argv: process.argv.slice(1), main: process.env.URL_IMPORT_MAIN }));', "--", target]);
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.deepEqual(output.argv, [target]);
@@ -146,7 +146,7 @@ describe("remote resolution", () => {
   });
 
   it("resolves installed npm packages from a remote parent", async () => {
-    const result = await run([cliPath.pathname, `${baseUrl}/npm-parent.mjs`]);
+    const result = await run([cliPath, `${baseUrl}/npm-parent.mjs`]);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(typeof JSON.parse(result.stdout).version, "string");
     assert.deepEqual(requests, ["/npm-parent.mjs"]);
@@ -181,7 +181,7 @@ describe("remote resolution", () => {
     const workerPath = join(workspace, "worker.mjs");
     writeFileSync(workerPath, 'import { parentPort } from "node:worker_threads"; parentPort.postMessage("local-worker");');
     for (const tmp of ["0", "1"]) {
-      const result = await run([cliPath.pathname, `${baseUrl}/worker-main.mjs`, pathToFileURL(workerPath).href], { URL_IMPORT_TMP: tmp });
+      const result = await run([cliPath, `${baseUrl}/worker-main.mjs`, pathToFileURL(workerPath).href], { URL_IMPORT_TMP: tmp });
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout.trim(), "local-worker");
     }
@@ -194,7 +194,7 @@ describe("remote resolution", () => {
     writeFileSync(join(packagePath, "answer.mjs"), "export default 42;");
     const entryPath = join(packagePath, "main.mjs");
     writeFileSync(entryPath, 'import answer from "#answer"; console.log(answer);');
-    const result = await run([cliPath.pathname, `--cdn=${baseUrl}/cdn/`, entryPath]);
+    const result = await run([cliPath, `--cdn=${baseUrl}/cdn/`, entryPath]);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), "42");
     assert.deepEqual(requests, []);
@@ -208,7 +208,7 @@ describe("remote resolution", () => {
     writeFileSync(join(packagePath, "node_modules", "installed-fixture", "main.mjs"), 'export default "local";');
     const entryPath = join(packagePath, "main.mjs");
     writeFileSync(entryPath, 'import local from "installed-fixture"; import remote from "cdn-only-fixture"; console.log(JSON.stringify({ local, remote }));');
-    const result = await run([cliPath.pathname, `--cdn=${baseUrl}/cdn/`, entryPath]);
+    const result = await run([cliPath, `--cdn=${baseUrl}/cdn/`, entryPath]);
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), { local: "local", remote: "cdn-fixture" });
     assert.deepEqual(requests, ["/cdn/cdn-only-fixture"]);

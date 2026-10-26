@@ -102,7 +102,18 @@ export function readCache(url: string, depth = 0): CacheEntry | null {
   if (depth > MAX_REDIRECTS) return null;
   try {
     url = new URL(url).href;
-    const raw = readFileSync(cachePaths(url).file);
+    const path = cachePaths(url).file;
+    let raw: Buffer;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        raw = readFileSync(path);
+        break;
+      } catch (error) {
+        if (process.platform !== "win32" || attempt >= 20 ||
+          !(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+      }
+    }
     const metadataOffset = raw.lastIndexOf(META_MARKER);
     if (metadataOffset === -1) return null;
     const metadata: unknown = JSON.parse(raw.subarray(metadataOffset + META_MARKER.length).toString("utf8"));
@@ -161,6 +172,8 @@ export function writeFileAtomicSync(path: string, source: ModuleSource): void {
     fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = undefined;
+    // Windows rename does not replace an existing destination.
+    if (process.platform === "win32") rmSync(target, { force: true });
     renameSync(temporaryPath, target);
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);

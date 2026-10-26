@@ -98,6 +98,7 @@ const cdnBase = process.env.URL_IMPORT_CDN;
 /** A leading scheme excludes node:, data:, file:, npm: and other full URLs. */
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 const projectParentUrl = (): string => pathToFileURL(resolvePath(process.cwd(), "package.json")).href;
+let resolvingLocalPackage = false;
 // Hand the already-fetched source from resolve to load, including with --reload.
 const pendingLoads = new Map<string, CacheEntry>();
 
@@ -111,11 +112,24 @@ function isBareSpecifier(specifier: string): boolean {
   return !specifier.startsWith("#") && !isRelativeSpecifier(specifier) && !SCHEME_RE.test(specifier);
 }
 
+function normalizeWindowsPath(url: string): string {
+  return process.platform === "win32" && /^[a-zA-Z]:[\\/]/.test(url) ? pathToFileURL(url).href : url;
+}
+
 /** Use require.resolve for npm: packages, anchored to a local caller or the project. */
 function resolveLocalPackage(specifier: string, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput {
   const parentURL = context.parentURL && !getHttpParentUrl(context.parentURL) ? context.parentURL : projectParentUrl();
   if (isBuiltin(specifier)) return nextResolve(specifier, { ...context, parentURL });
-  const resolved = createRequire(parentURL).resolve(specifier);
+  resolvingLocalPackage = true;
+  let resolved: string;
+  try {
+    resolved = createRequire(parentURL).resolve(specifier);
+  } finally {
+    resolvingLocalPackage = false;
+  }
+  if (isHttpUrl(resolved)) {
+    throw Object.assign(new Error(`Cannot resolve local package "${specifier}"`), { code: "MODULE_NOT_FOUND" });
+  }
   return nextResolve(pathToFileURL(resolved).href, { ...context, parentURL });
 }
 
@@ -193,7 +207,7 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
     if (isHttpUrl(specifier)) return resolveHttp(specifier);
 
     const httpParent = getHttpParentUrl(context.parentURL);
-    if (cdnBase && isBareSpecifier(specifier) && !isBuiltin(specifier)) {
+    if (cdnBase && !resolvingLocalPackage && isBareSpecifier(specifier) && !isBuiltin(specifier)) {
       // node_modules first; only a missing package falls back to the CDN.
       // ESM resolution reports ERR_MODULE_NOT_FOUND, CJS reports MODULE_NOT_FOUND.
       const localContext = context.parentURL && !httpParent ? context : { ...context, parentURL: projectParentUrl() };
@@ -217,7 +231,7 @@ export function createLoad(fetchFn: (url: string) => CacheEntry): LoadHookSync;
 export function createLoad(fetchFn: (url: string) => Promise<CacheEntry>): LoadHookAsync;
 export function createLoad(fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>) {
   return function load(url: string, context: LoadHookContext, nextLoad: NextLoad): LoadFnOutput | Promise<LoadFnOutput> {
-    if (!isHttpUrl(url)) return nextLoad(url, context);
+    if (!isHttpUrl(url)) return nextLoad(normalizeWindowsPath(url), context);
     const cached = pendingLoads.get(url);
     pendingLoads.delete(url);
     const handleFetched = (entry: CacheEntry): LoadFnOutput => {
