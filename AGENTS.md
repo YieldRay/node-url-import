@@ -55,7 +55,7 @@ Resolve chooses the final URL before Node assigns module identity; load reuses t
 
 ### Deno compatibility
 
-Target **Deno 2.9.7 only**; no older cache readers or migration.
+Target **Deno 2.9.8 only**; no older cache readers or migration.
 
 - Canonicalize URLs before cache/network access. Join `Location` directly: absent fragments are dropped; explicit fragments and trailing `#` survive. Apply locked redirects even with reload; limit the combined chain to 10 hops.
 - Cache authority: escape `_` as `%5f`, use `_port_<port>`, retain bracketed IPv6. Above 250 characters, use `#sha256(unescaped host[:port])`. Hash pathname + query, including a bare `?`; omit fragments from disk keys.
@@ -69,4 +69,4 @@ Target **Deno 2.9.7 only**; no older cache readers or migration.
 
 - Registration changes: smoke-test compiled `dist/` with isolated `DENO_DIR` on Node 18/20/22 (ESM) and 24 (CJS).
 - Retain regressions for CLI → local Worker, captured async initialization, JSON attributes/custom conditions/require, URL aliases, charset bytes, file modes and symlink-alias concurrent locks.
-- Deno interop: use 2.9.7, compare v5 locks both ways, require zero-network `--cached-only` loads for BOM-free UTF-8. Deno can reject its own frozen locks when decoding/BOM removal changes bytes; preserve integrity errors rather than rewriting hashes.
+- Deno interop: use 2.9.8, compare v5 locks both ways, require zero-network `--cached-only` loads for BOM-free UTF-8. Deno can reject its own frozen locks when decoding/BOM removal changes bytes; preserve integrity errors rather than rewriting hashes.

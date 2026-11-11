@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { ResolveHookContext, LoadHookContext } from "node:module";
-import { resolve, load, inferFormat, createResolve } from "./hooks.ts";
+import { createLoad, inferFormat, createResolve } from "./hooks.ts";
+import { fetchModuleSync } from "./sync-fetch.ts";
 import { initialize, resolve as resolveLoader } from "./loader.ts";
 import { cachePaths, writeCache } from "./cache.ts";
 import { rmSync } from "node:fs";
@@ -19,6 +20,9 @@ const defaultLoadContext: LoadHookContext = {
   format: null,
   importAttributes: {},
 };
+
+const resolve = createResolve(fetchModuleSync);
+const load = createLoad(fetchModuleSync);
 
 // A simple passthrough nextResolve that marks itself as called
 function makeNextResolve() {

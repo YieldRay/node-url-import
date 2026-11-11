@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import process from "node:process";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -108,6 +108,36 @@ describe("tmp URL identity", () => {
 });
 
 describe("tmp module loading", () => {
+  it("maps CJS realpaths through a symlinked TMPDIR", async (t) => {
+    const actualTmpdir = join(workspace, "actual-tmpdir");
+    const linkedTmpdir = join(workspace, "linked-tmpdir");
+    mkdirSync(actualTmpdir);
+    try {
+      symlinkSync(actualTmpdir, linkedTmpdir, "dir");
+    } catch (error) {
+      if (process.platform === "win32") {
+        t.skip(`cannot create a symlink: ${String(error)}`);
+        return;
+      }
+      throw error;
+    }
+
+    const moduleUrl = "https://modules.test/symlinked-tmp.cjs";
+    const tmpModuleUrl = new URL("./tmp.ts", import.meta.url).href;
+    const result = await run(["--import", registerUrl, "--input-type=module", "--eval", `
+      import { createRequire } from "node:module";
+      const { urlToTmpPath, writeTmpFile, tmpPathToUrl } = await import(${JSON.stringify(tmpModuleUrl)});
+      const path = urlToTmpPath(${JSON.stringify(moduleUrl)});
+      writeTmpFile(path, "module.exports = true;");
+      const canonicalPath = createRequire(import.meta.url).resolve(path);
+      console.log(JSON.stringify({ path, canonicalPath, url: tmpPathToUrl(canonicalPath) }));
+    `], { TMPDIR: linkedTmpdir });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.url, moduleUrl);
+  });
+
   it("preserves extensionless relative import bases", async () => {
     const result = await run(["--import", registerUrl, "--eval", `import(${JSON.stringify(`${baseUrl}/pkg`)}).then(m => console.log(m.default));`]);
     assert.equal(result.status, 0, result.stderr);

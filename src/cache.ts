@@ -57,7 +57,7 @@ export function cachePaths(url: string): CachePaths {
   // distinguishes them, so retain that delimiter when hashing the resource.
   const query = parsed.href.includes("?") ? parsed.search || "?" : "";
   const hash = createHash("sha256").update(parsed.pathname + query).digest("hex");
-  // Deno 2.9.7 escapes host underscores and reserves _port_ for explicit ports.
+  // Deno 2.9.8 escapes host underscores and reserves _port_ for explicit ports.
   const host = parsed.hostname.replaceAll("_", "%5f") + (parsed.port ? `_port_${parsed.port}` : "");
   const authority = host.length > 250 ? `#${createHash("sha256").update(parsed.host).digest("hex")}` : host;
   const dir = join(CACHE_DIR, parsed.protocol.slice(0, -1), authority);
@@ -118,7 +118,7 @@ export function readCache(url: string, depth = 0): CacheEntry | null {
     if (metadataOffset === -1) return null;
     const metadata: unknown = JSON.parse(raw.subarray(metadataOffset + META_MARKER.length).toString("utf8"));
     if (!isMetadata(metadata) || withoutFragment(metadata.url) !== withoutFragment(url)) return null;
-    // Deno 2.9.7 may cache unsuccessful responses as body-less 404 entries.
+    // Deno 2.9.8 may cache unsuccessful responses as body-less 404 entries.
     if ("x-deno-not-found" in metadata.headers) return null;
 
     // A Location header distinguishes redirect stubs from valid empty modules.

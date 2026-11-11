@@ -13,8 +13,10 @@ import { fileURLToPath } from "node:url";
 import { readCache } from "./cache.ts";
 import type { CacheEntry } from "./cache.ts";
 import { resolveLockRedirects, verifyModuleLock } from "./lock.ts";
-import { FETCH_TIMEOUT_MS, MAX_REDIRECTS, isHttpUrl } from "./constants.ts";
+import { getFetchTimeoutMs, MAX_REDIRECTS, isHttpUrl } from "./constants.ts";
+import type { FetchOptions } from "./fetch.ts";
 
+const authTokens = process.env.DENO_AUTH_TOKENS;
 let worker: Worker | null = null;
 
 function getWorker(): Worker {
@@ -22,8 +24,13 @@ function getWorker(): Worker {
     // Resolve relative to this module so source .ts and published .js both work.
     const extension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
     const path = fileURLToPath(new URL(`./sync-fetch-worker${extension}`, import.meta.url));
+    // Authentication is configured at registration, even if this worker starts
+    // lazily or restarts after a timeout. Preserve an unset variable as unset.
+    const env = { ...process.env };
+    if (authTokens === undefined) delete env.DENO_AUTH_TOKENS;
+    else env.DENO_AUTH_TOKENS = authTokens;
     // Hook and eval flags must never be inherited by the network worker.
-    const current = new Worker(path, { execArgv: [] });
+    const current = new Worker(path, { execArgv: [], env });
     current.unref();
     const reset = (): void => { if (worker === current) worker = null; };
     current.on("error", reset);
@@ -38,17 +45,12 @@ function discardWorker(current: Worker): void {
   void current.terminate();
 }
 
-export interface SyncFetchOptions {
-  /** Maximum blocking time, including worker startup; defaults to 60 seconds. */
-  timeoutMs?: number;
-}
-
 type WorkerResponse = { entry: CacheEntry } | { error: string };
 
 /** Fetch synchronously from verified disk cache or the network worker. */
-export function fetchModuleSync(url: string, options: SyncFetchOptions = {}): CacheEntry {
-  const timeoutMs = options.timeoutMs ?? FETCH_TIMEOUT_MS;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("The fetch timeout must be positive and finite");
+export function fetchModuleSync(url: string, options: FetchOptions = {}): CacheEntry {
+  const timeoutMs = getFetchTimeoutMs(options.timeoutMs);
+  const headers = [...new Headers(options.headers)];
   url = new URL(url).href;
   if (!isHttpUrl(url)) throw new TypeError(`Expected an HTTP(S) module URL: ${url}`);
   if (process.env.URL_IMPORT_RELOAD !== "1") {
@@ -67,7 +69,12 @@ export function fetchModuleSync(url: string, options: SyncFetchOptions = {}): Ca
   const { port1, port2 } = new MessageChannel();
   try {
     try {
-      current.postMessage({ url, timeoutMs, signal: signal.buffer, port: port2 }, [port2]);
+      current.postMessage({
+        url,
+        options: { timeoutMs, headers },
+        signal: signal.buffer,
+        port: port2,
+      }, [port2]);
     } catch (error) {
       discardWorker(current);
       throw error;

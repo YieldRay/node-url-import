@@ -31,11 +31,13 @@ node-url-import --lock --frozen ./app.mjs
 | `--lock` | `URL_IMPORT_LOCK=<path>` | Check/write `./deno.lock` |
 | `--lock-file <path>` | `URL_IMPORT_LOCK=<path>` | Use a custom lock path |
 | `--frozen` | `URL_IMPORT_FROZEN=1` | Reject lock changes |
-| `--tmp` | `URL_IMPORT_TMP=1` | Load readable local files; `import.meta.url` becomes a `file:` URL |
+| `--tmp` | `URL_IMPORT_TMP=1` | Load all remote modules from readable local files; `import.meta.url` becomes a `file:` URL |
 | `--cdn[=<url>]` | `URL_IMPORT_CDN=<base/>` | Resolve missing bare packages via a CDN (default: `https://esm.sh/`) |
 | `--clear-cache` | — | Purge the shared remote cache |
 
 Boolean options are flag-only: boolean values and `--no-*` forms are unsupported. Set environment variables before registration; use `0` to disable inherited booleans, or unset CDN/lock variables to disable those settings.
+
+For private modules, `DENO_AUTH_TOKENS` accepts `token@host` for Bearer auth or `user:password@host` for Basic auth, with `;` separating entries. Domain entries also match subdomains; IP entries match only that address. Include a non-default port in `host` when needed. Each redirect target uses the first matching entry in configuration order.
 
 Register without the CLI:
 
@@ -43,6 +45,17 @@ Register without the CLI:
 node --import node-url-import/register ./app.mjs
 node --import node-url-import/register ./app.cjs
 node --loader node-url-import/loader ./app.mjs # Legacy, ESM only
+```
+
+Register programmatically (Node 22.15+):
+
+```js
+import { createResolve, createLoad, fetchModuleSync } from "node-url-import";
+import { registerHooks } from "node:module";
+registerHooks({
+  resolve: createResolve(fetchModuleSync),
+  load: createLoad(fetchModuleSync),
+});
 ```
 
 | Feature | Minimum Node.js |
@@ -75,7 +88,7 @@ import data from "https://example.com/data.json" with { type: "json" };
 
 ## Cache and lock
 
-Shares **Deno 2.9.7** remote-cache and v5 lock formats only; older layouts are not read or migrated. Cache location: `$DENO_DIR/remote/`, defaulting to `~/Library/Caches/deno/remote/` on macOS and `~/.cache/deno/remote/` on Linux. Entries do not expire; Node's in-process module cache still applies.
+Shares **Deno 2.9.8** remote-cache and v5 lock formats only; older layouts are not read or migrated. Node's in-process module cache still applies.
 
 Cache keys include queries but exclude fragments; full URLs identify modules and lock records. Redirects use Deno's URL-join rules: `Location` without `#` drops the request fragment. Relative imports use the final URL, with up to 10 redirect hops.
 
@@ -85,14 +98,22 @@ Explicit `--frozen` supplies `./deno.lock` if no path is configured. `URL_IMPORT
 
 ## Programmatic API
 
-```js
-import { fetchModule, clearCache } from "node-url-import";
+Caller-provided headers override defaults. Explicit `Authorization` overrides `DENO_AUTH_TOKENS`; cross-origin redirects strip `Authorization`, `Proxy-Authorization`, `Cookie` and `Cookie2`, then match tokens for the destination.
 
-const { source, contentType, finalUrl, redirectChain } = await fetchModule(
-  "https://esm.sh/lodash-es/add",
-  { signal: AbortSignal.timeout(10_000) },
-);
+`fetchModule` and `fetchModuleSync` accept the same options: `timeoutMs` sets the request timeout, and `headers` supplies request headers.
+
+```js
+import { fetchModule, fetchModuleSync, clearCache } from "node-url-import";
+
+const url = "https://esm.sh/lodash-es/add";
+const options = {
+  timeoutMs: 10_000,
+  headers: { "User-Agent": "my-app" },
+};
+
+const { source, contentType, finalUrl, redirectChain } = await fetchModule(url, options);
 console.log(source);
+const cached = fetchModuleSync(url, options); // Synchronously reuses the cached response
 clearCache(); // Synchronously purges the shared remote cache
 ```
 
@@ -100,6 +121,7 @@ clearCache(); // Synchronously purges the shared remote cache
 
 - TypeScript uses native type stripping; `.cts` retains CommonJS semantics.
 - Bundles calling `createRequire(import.meta.url)` fail on HTTP URLs. Use `--tmp`, a compatible CDN build, or a local package. Temporary files remain until manually removed or cleaned by the OS.
+- With synchronous hooks (`module.registerHooks()`, Node 22.15+), remote CommonJS modules (`.cjs` and supported `.cts`) are written to temporary files automatically, even without `--tmp`, so ordinary relative `require()` calls work through Node's native CommonJS loader. `require.resolve()` uses Node's internal resolver without invoking hooks, so it cannot resolve remote specifiers. `__filename`, `module.filename` and `require.cache` use temporary file paths, preserving CommonJS file identity. The async `module.register()` loader does not provide this automatic CommonJS materialization; Node 24+ is required for `require()` of HTTP URLs.
 - For remote CLI entries, `process.argv[1]` is path-normalized; use `import.meta.url` for the module location.
 
 TypeScript needs ambient declarations for URL imports. Add them to an included `.d.ts` file, for example:

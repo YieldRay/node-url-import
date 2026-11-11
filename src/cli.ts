@@ -99,6 +99,7 @@ ${b("Options:")}
 
 ${b("Environment:")}
   ${y("DENO_DIR")}                 Deno cache root ${dim(`(default: ${defaultCacheRoot})`)}
+  ${y("DENO_AUTH_TOKENS")}         HTTP auth: token@host or user:password@host ${dim("(; separated)")}
   ${y("URL_IMPORT_TMP=1")}         Same as --tmp
   ${y("URL_IMPORT_RELOAD=1")}      Same as --reload
   ${y("URL_IMPORT_LOCK")}${dim("=path")}     Same as --lock <file>

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ResolveHookContext } from "node:module";
 import { isEsmShCdn, jsrToCdnUrl, parseJsrSpecifier } from "./jsr.ts";
-import { resolve } from "./hooks.ts";
+import { createResolve } from "./hooks.ts";
 
 describe("parseJsrSpecifier", () => {
   it("accepts valid specifiers", () => {
@@ -71,6 +71,7 @@ describe("hooks wiring", () => {
     parentURL: undefined,
   };
   const nextResolve = (specifier: string) => ({ url: specifier });
+  const resolve = createResolve(() => assert.fail("This specifier must be rejected before fetching"));
 
   it("rejects jsr: specifiers when the CDN is not esm.sh", () => {
     // The test process runs without URL_IMPORT_CDN, so the feature is off.

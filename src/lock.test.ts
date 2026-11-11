@@ -49,6 +49,7 @@ const cacheUrl = new URL("./cache.ts", import.meta.url).href;
 const fetchUrl = new URL("./fetch.ts", import.meta.url).href;
 const syncFetchUrl = new URL("./sync-fetch.ts", import.meta.url).href;
 const lockUrl = new URL("./lock.ts", import.meta.url).href;
+const hooksUrl = new URL("./hooks.ts", import.meta.url).href;
 
 function writeLock(data: object): void {
   writeFileSync(join(workspace, "deno.lock"), JSON.stringify({ version: "5", ...data }));
@@ -101,6 +102,95 @@ describe("lock file", () => {
       `, { URL_IMPORT_FROZEN: "1" });
       assert.equal(result.status, 0, result.stderr);
     }
+  });
+
+  it("does not materialize CommonJS modules rejected by a frozen lock", async () => {
+    const url = "https://lock.test/auto-tmp.cjs";
+    const source = "module.exports = 42;";
+    writeLock({ remote: {} });
+    const previousLock = readFileSync(join(workspace, "deno.lock"), "utf8");
+    const result = await runScript(`
+      import assert from "node:assert/strict";
+      import { registerHooks } from "node:module";
+      import { readdirSync } from "node:fs";
+      import { join } from "node:path";
+      const { createResolve, createLoad } = await import(${JSON.stringify(hooksUrl)});
+      const fetch = (url) => ({ url, finalUrl: url, source: ${JSON.stringify(source)}, contentType: "application/javascript", redirectChain: [url] });
+      registerHooks({ resolve: createResolve(fetch), load: createLoad(fetch) });
+      const error = await import(${JSON.stringify(url)}).then(() => null, (error) => error);
+      const moduleFiles = (root) => {
+        try { return readdirSync(root, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name); }
+        catch (error) { if (error.code === "ENOENT") return []; throw error; }
+      };
+      assert.deepEqual({
+        rejectedForMissingRecord: error instanceof Error && /lockfile is out of date/i.test(error.message),
+        moduleFiles: moduleFiles(join(process.env.TMPDIR, "node-url-import")),
+      }, { rejectedForMissingRecord: true, moduleFiles: [] });
+    `, {
+      URL_IMPORT_FROZEN: "1",
+      TMPDIR: join(workspace, "tmp"),
+      URL_IMPORT_TMP: "0",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(workspace, "deno.lock"), "utf8"), previousLock);
+  });
+
+  it("does not materialize explicitly tmp-loaded modules with a mismatched frozen hash", async () => {
+    const url = "https://lock.test/explicit-tmp.cjs";
+    const source = "module.exports = 42;";
+    writeLock({ remote: { [url]: hashSource("module.exports = 0;") } });
+    const previousLock = readFileSync(join(workspace, "deno.lock"), "utf8");
+    const result = await runScript(`
+      import assert from "node:assert/strict";
+      import { registerHooks } from "node:module";
+      import { readdirSync } from "node:fs";
+      import { join } from "node:path";
+      const { createResolve, createLoad } = await import(${JSON.stringify(hooksUrl)});
+      const fetch = (url) => ({ url, finalUrl: url, source: ${JSON.stringify(source)}, contentType: "application/javascript", redirectChain: [url] });
+      registerHooks({ resolve: createResolve(fetch), load: createLoad(fetch) });
+      const error = await import(${JSON.stringify(url)}).then(() => null, (error) => error);
+      const moduleFiles = (root) => {
+        try { return readdirSync(root, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name); }
+        catch (error) { if (error.code === "ENOENT") return []; throw error; }
+      };
+      assert.deepEqual({
+        rejectedForHashMismatch: error instanceof Error && /Integrity check failed/.test(error.message),
+        moduleFiles: moduleFiles(join(process.env.TMPDIR, "node-url-import")),
+      }, { rejectedForHashMismatch: true, moduleFiles: [] });
+    `, {
+      URL_IMPORT_FROZEN: "1",
+      TMPDIR: join(workspace, "explicit-tmp"),
+      URL_IMPORT_TMP: "1",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(workspace, "deno.lock"), "utf8"), previousLock);
+  });
+
+  it("does not materialize CommonJS modules with invalid import attributes", async () => {
+    const url = "https://lock.test/invalid-attributes.cjs";
+    const source = "module.exports = 42;";
+    writeLock({ remote: {} });
+    const previousLock = readFileSync(join(workspace, "deno.lock"), "utf8");
+    const result = await runScript(`
+      import assert from "node:assert/strict";
+      import { registerHooks } from "node:module";
+      import { readdirSync } from "node:fs";
+      import { join } from "node:path";
+      const { createResolve, createLoad } = await import(${JSON.stringify(hooksUrl)});
+      const fetch = (url) => ({ url, finalUrl: url, source: ${JSON.stringify(source)}, contentType: "application/javascript", redirectChain: [url] });
+      registerHooks({ resolve: createResolve(fetch), load: createLoad(fetch) });
+      await assert.rejects(import(${JSON.stringify(url)}, { with: { type: "json" } }), { code: "ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE" });
+      const moduleFiles = (root) => {
+        try { return readdirSync(root, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name); }
+        catch (error) { if (error.code === "ENOENT") return []; throw error; }
+      };
+      assert.deepEqual(moduleFiles(join(process.env.TMPDIR, "node-url-import")), []);
+    `, {
+      TMPDIR: join(workspace, "invalid-attributes-tmp"),
+      URL_IMPORT_TMP: "0",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(workspace, "deno.lock"), "utf8"), previousLock);
   });
 
   it("records cached modules without discarding unrelated Deno lock sections", async () => {

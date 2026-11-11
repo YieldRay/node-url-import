@@ -1,6 +1,7 @@
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -73,6 +74,29 @@ const server = createServer((request, response) => {
 });
 let baseUrl: string;
 
+function runAuthChild(program: string, authTokens?: string, reload = false, lockFile = false) {
+  const directory = mkdtempSync(join(tmpdir(), "node-url-import-auth-test-"));
+  try {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      DENO_DIR: join(directory, "deno"),
+      URL_IMPORT_RELOAD: reload ? "1" : "0",
+      URL_IMPORT_LOCK: lockFile ? join(directory, "deno.lock") : "",
+      URL_IMPORT_FROZEN: "0",
+      FORCE_COLOR: "0",
+    };
+    if (authTokens === undefined) delete env.DENO_AUTH_TOKENS;
+    else env.DENO_AUTH_TOKENS = authTokens;
+    return spawnSync(process.execPath, ["--input-type=module", "--eval", program], {
+      encoding: "utf8",
+      timeout: 15_000,
+      env,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 before(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -87,6 +111,294 @@ after(async () => {
 });
 
 describe("fetchModule", () => {
+  it("matches DENO_AUTH_TOKENS at the HTTP boundary", () => {
+    const program = `
+      import assert from "node:assert/strict";
+      import { fetchModule } from ${JSON.stringify(new URL("./fetch.ts", import.meta.url).href)};
+
+      const calls = [];
+      globalThis.fetch = async (url, options) => {
+        calls.push({ url: String(url), authorization: new Headers(options.headers).get("authorization") });
+        return new Response("export default 1;", { headers: { "content-type": "application/javascript" } });
+      };
+      const cases = [
+        ["https://api.example.test/module.mjs", "https://api.example.test/module.mjs", "Bearer domain-token"],
+        ["https://sub.api.example.test/module.mjs", "https://sub.api.example.test/module.mjs", "Bearer domain-token"],
+        ["https://notapi.example.test/module.mjs", "https://notapi.example.test/module.mjs", undefined],
+        ["https://api.example.test.evil/module.mjs", "https://api.example.test.evil/module.mjs", undefined],
+        ["https://notexample.test/module.mjs", "https://notexample.test/module.mjs", undefined],
+        ["https://at.test/module.mjs", "https://at.test/module.mjs", "Bearer last@token"],
+        ["https://basic.test/module.mjs", "https://basic.test/module.mjs", "Basic YmFzaWM6d2l0aDpjb2xvbnM="],
+        ["https://first.test/module.mjs", "https://first.test/module.mjs", "Bearer first-match"],
+        ["https://child.first.test/module.mjs", "https://child.first.test/module.mjs", "Bearer first-match"],
+        ["https://port.test/module.mjs", "https://port.test/module.mjs", undefined],
+        ["https://port.test:443/module.mjs", "https://port.test/module.mjs", undefined],
+        ["https://port.test:8080/module.mjs", "https://port.test:8080/module.mjs", "Bearer custom-port"],
+        ["https://port.test:8081/module.mjs", "https://port.test:8081/module.mjs", undefined],
+        ["http://127.0.0.1/module.mjs", "http://127.0.0.1/module.mjs", "Bearer ipv4"],
+        ["http://127.0.0.1.example.test/module.mjs", "http://127.0.0.1.example.test/module.mjs", undefined],
+        ["http://127.0.0.2/module.mjs", "http://127.0.0.2/module.mjs", undefined],
+        ["http://127.000.0.1/module.mjs", "http://127.0.0.1/module.mjs", "Bearer ipv4"],
+        ["http://[2001:db8::1]/module.mjs", "http://[2001:db8::1]/module.mjs", "Bearer ipv6"],
+        ["http://[2001:0db8:0:0:0:0:0:1]/module.mjs", "http://[2001:db8::1]/module.mjs", "Bearer ipv6"],
+        ["http://[2001:db8::2]/module.mjs", "http://[2001:db8::2]/module.mjs", "Bearer ipv6-other"],
+        ["http://[2001:db8::2]:8080/module.mjs", "http://[2001:db8::2]:8080/module.mjs", "Bearer ipv6-port"],
+        ["https://untrimmed.test/module.mjs", "https://untrimmed.test/module.mjs", undefined],
+        ["https://tail.test/module.mjs", "https://tail.test/module.mjs", "Bearer tail"],
+        ["https://malformed.test/module.mjs", "https://malformed.test/module.mjs", undefined],
+        ["https://unconfigured.test/module.mjs", "https://unconfigured.test/module.mjs", undefined],
+      ];
+      for (const [input] of cases) await fetchModule(input);
+      assert.deepEqual(calls.map(({ url, authorization }) => [url, authorization ?? undefined]),
+        cases.map(([, url, authorization]) => [url, authorization]));
+
+      await assert.rejects(fetchModule("https://control.example.test/module.mjs"), (error) => {
+        assert.equal(error.message, "Invalid Authorization header in DENO_AUTH_TOKENS");
+        assert.doesNotMatch(error.message, /private\\ncredential/);
+        return true;
+      });
+      assert.equal(calls.length, cases.length);
+    `;
+    const authTokens = `\n${[
+      "domain-token@.API.EXAMPLE.TEST",
+      "last@token@at.test",
+      "basic:with:colons@basic.test",
+      "first-match@first.test",
+      "second-match@child.first.test",
+      "default-port@port.test:443",
+      "custom-port@port.test:8080",
+      "ipv4@127.0.0.1",
+      "invalid-ipv4@127.000.0.2",
+      "ipv6@[2001:db8::1]",
+      "ipv6-other@[2001:db8::2]",
+      "ipv6-port@[2001:db8::2]:8080",
+      "untrimmed@ untrimmed.test ",
+      "tail@tail.test",
+      "malformed.test",
+      "private\ncredential@control.example.test",
+    ].join(";")}\t`;
+    const child = runAuthChild(program, authTokens, true);
+    assert.equal(child.status, 0, `${child.stderr}\n${child.stdout}`);
+    assert.doesNotMatch(child.stderr, /last@token|basic:with:colons|domain-token|private\ncredential/);
+    assert.match(child.stderr, /Badly formed auth token discarded/);
+  });
+
+  it("reuses authenticated cache entries without another request", () => {
+    const program = `
+      import assert from "node:assert/strict";
+      import { fetchModule } from ${JSON.stringify(new URL("./fetch.ts", import.meta.url).href)};
+      import { readCache } from ${JSON.stringify(new URL("./cache.ts", import.meta.url).href)};
+      const calls = [];
+      globalThis.fetch = async (url, options) => {
+        calls.push({ url: String(url), authorization: new Headers(options.headers).get("authorization") });
+        return new Response("export default 1;", { headers: { "content-type": "application/javascript" } });
+      };
+      const url = "https://cache-auth.example.test/cached.mjs";
+      const first = await fetchModule(url);
+      const second = await fetchModule(url);
+      assert.deepEqual(second, first);
+      assert.deepEqual(calls, [{ url, authorization: "Bearer cached" }]);
+      assert.ok(readCache(url));
+    `;
+    const child = runAuthChild(program, "cached@cache-auth.example.test");
+    assert.equal(child.status, 0, `${child.stderr}\n${child.stdout}`);
+    assert.doesNotMatch(child.stderr, /cached/);
+  });
+
+  it("does not add credentials when DENO_AUTH_TOKENS was unset at module startup", () => {
+    const program = `
+      import assert from "node:assert/strict";
+      import process from "node:process";
+      import { fetchModule } from ${JSON.stringify(new URL("./fetch.ts", import.meta.url).href)};
+      const calls = [];
+      globalThis.fetch = async (url, options) => {
+        calls.push(new Headers(options.headers).get("authorization"));
+        return new Response("export default 1;", { headers: { "content-type": "application/javascript" } });
+      };
+      process.env.DENO_AUTH_TOKENS = "late@unset.example.test";
+      await fetchModule("https://unset.example.test/module.mjs");
+      assert.deepEqual(calls, [null]);
+    `;
+    const child = runAuthChild(program);
+    assert.equal(child.status, 0, `${child.stderr}\n${child.stdout}`);
+  });
+
+  it("does not cache failed authenticated responses", () => {
+    const program = `
+      import assert from "node:assert/strict";
+      import { fetchModule } from ${JSON.stringify(new URL("./fetch.ts", import.meta.url).href)};
+      import { readCache } from ${JSON.stringify(new URL("./cache.ts", import.meta.url).href)};
+      const url = "https://private.example.test/failures.mjs";
+      let requests = 0;
+      globalThis.fetch = async (_url, options) => {
+        assert.equal(new Headers(options.headers).get("authorization"), "Bearer private-token");
+        requests++;
+        if (requests === 1) return new Response("denied", { status: 401, statusText: "Unauthorized" });
+        if (requests === 2) return new Response("missing", { status: 404, statusText: "Not Found" });
+        return new Response("export default 42;", { headers: { "content-type": "application/javascript" } });
+      };
+      await assert.rejects(fetchModule(url), /401 Unauthorized/);
+      assert.equal(readCache(url), null);
+      await assert.rejects(fetchModule(url), /404 Not Found/);
+      assert.equal(readCache(url), null);
+      assert.equal((await fetchModule(url)).source, "export default 42;");
+      assert.ok(readCache(url));
+      assert.equal(requests, 3);
+    `;
+    const child = runAuthChild(program, "private-token@private.example.test");
+    assert.equal(child.status, 0, `${child.stderr}\n${child.stdout}`);
+    assert.doesNotMatch(child.stderr, /private-token/);
+  });
+
+  it("accepts HeadersInit forms and lets explicit headers override defaults and auth tokens", () => {
+    const program = `
+      import assert from "node:assert/strict";
+      import { fetchModule } from ${JSON.stringify(new URL("./fetch.ts", import.meta.url).href)};
+      const calls = [];
+      globalThis.fetch = async (url, options) => {
+        calls.push({ url: String(url), headers: new Headers(options.headers) });
+        return new Response("export default 1;", { headers: { "content-type": "application/javascript" } });
+      };
+      const headers = new Headers([["X-Request", "headers-instance"]]);
+      await fetchModule("https://headers.example.test/record.mjs", {
+        headers: { "User-Agent": "caller-agent", "X-Request": "record", Authorization: "Basic caller" },
+      });
+      await fetchModule("https://headers.example.test/tuples.mjs", {
+        headers: [["X-Request", "tuples"]],
+      });
+      await fetchModule("https://headers.example.test/headers.mjs", { headers });
+      assert.deepEqual(calls.map(({ headers }) => [
+        headers.get("user-agent"), headers.get("x-request"), headers.get("authorization"),
+      ]), [
+        ["caller-agent", "record", "Basic caller"],
+        ["node-url-import", "tuples", "Bearer configured-token"],
+        ["node-url-import", "headers-instance", "Bearer configured-token"],
+      ]);
+      assert.equal(headers.get("authorization"), null);
+      assert.equal(headers.get("user-agent"), null);
+    `;
+    const child = runAuthChild(program, "configured-token@headers.example.test", true);
+    assert.equal(child.status, 0, `${child.stderr}\n${child.stdout}`);
+  });
+
+  it("validates timeout and headers options even on cache hits", () => {
+    const program = `
+      import assert from "node:assert/strict";
+      import { fetchModule } from ${JSON.stringify(new URL("./fetch.ts", import.meta.url).href)};
+      import { writeCache } from ${JSON.stringify(new URL("./cache.ts", import.meta.url).href)};
+      let fetchCalls = 0;
+      globalThis.fetch = async () => {
+        fetchCalls++;
+        return new Response("export default 1;", {
+          headers: { "content-type": "application/javascript" },
+        });
+      };
+      const url = "https://timeout.example.test/module.mjs";
+      writeCache([url], "export default 1;", "application/javascript");
+      for (const timeoutMs of [0, -1, 1.5, NaN, Infinity, 2147483648]) {
+        await assert.rejects(fetchModule(url, { timeoutMs }), {
+          name: "RangeError",
+          message: "The fetch timeout must be a positive integer no greater than 2147483647",
+        });
+      }
+      await assert.rejects(fetchModule(url, { headers: [["invalid header name", "value"]] }), TypeError);
+      assert.equal((await fetchModule(url, { timeoutMs: 2147483647 })).source, "export default 1;");
+      assert.equal(fetchCalls, 0);
+    `;
+    const child = runAuthChild(program);
+    assert.equal(child.status, 0, `${child.stderr}\n${child.stdout}`);
+  });
+
+  it("preserves caller headers on same-origin redirects and filters credentials across origins", () => {
+    const program = `
+      import assert from "node:assert/strict";
+      import { fetchModule } from ${JSON.stringify(new URL("./fetch.ts", import.meta.url).href)};
+      const calls = [];
+      globalThis.fetch = async (url, options) => {
+        const href = String(url);
+        const headers = new Headers(options.headers);
+        calls.push({ url: href, headers });
+        if (href === "https://same.example.test/start.mjs") {
+          return new Response(null, { status: 302, headers: { location: "/finish.mjs" } });
+        }
+        if (href === "https://source.example.test/start.mjs") {
+          return new Response(null, { status: 302, headers: { location: "https://target.example.test/finish.mjs" } });
+        }
+        return new Response("export default 1;", { headers: { "content-type": "application/javascript" } });
+      };
+
+      const sameOriginHeaders = {
+        Authorization: "Basic caller",
+        "Proxy-Authorization": "Basic proxy",
+        Cookie: "session=same-origin",
+        Cookie2: "legacy=same-origin",
+        "X-Request": "same-origin",
+      };
+      await fetchModule("https://same.example.test/start.mjs", { headers: sameOriginHeaders });
+      assert.equal(calls[0].headers.get("authorization"), "Basic caller");
+      assert.equal(calls[1].headers.get("authorization"), "Basic caller");
+      assert.equal(calls[1].headers.get("proxy-authorization"), "Basic proxy");
+      assert.equal(calls[1].headers.get("cookie"), "session=same-origin");
+      assert.equal(calls[1].headers.get("cookie2"), "legacy=same-origin");
+      assert.equal(calls[1].headers.get("x-request"), "same-origin");
+      assert.deepEqual(sameOriginHeaders, {
+        Authorization: "Basic caller",
+        "Proxy-Authorization": "Basic proxy",
+        Cookie: "session=same-origin",
+        Cookie2: "legacy=same-origin",
+        "X-Request": "same-origin",
+      });
+
+      await fetchModule("https://source.example.test/start.mjs", {
+        headers: {
+          Authorization: "Basic caller-cross-origin",
+          "Proxy-Authorization": "Basic proxy",
+          Cookie: "session=cross-origin",
+          Cookie2: "legacy=cross-origin",
+          "X-Request": "cross-origin",
+        },
+      });
+      assert.equal(calls[2].headers.get("authorization"), "Basic caller-cross-origin");
+      assert.equal(calls[2].headers.get("proxy-authorization"), "Basic proxy");
+      assert.equal(calls[2].headers.get("cookie"), "session=cross-origin");
+      assert.equal(calls[2].headers.get("cookie2"), "legacy=cross-origin");
+      assert.equal(calls[3].headers.get("authorization"), "Bearer target-token");
+      assert.equal(calls[3].headers.get("proxy-authorization"), null);
+      assert.equal(calls[3].headers.get("cookie"), null);
+      assert.equal(calls[3].headers.get("cookie2"), null);
+      assert.equal(calls[3].headers.get("x-request"), "cross-origin");
+
+      const { writeFileSync } = await import("node:fs");
+      const start = "https://locked-a.example.test/start.mjs";
+      const middle = "https://locked-b.example.test/middle.mjs";
+      const final = "https://locked-a.example.test/final.mjs";
+      const { default: process } = await import("node:process");
+      writeFileSync(process.env.URL_IMPORT_LOCK, JSON.stringify({
+        version: "5",
+        redirects: { [start]: middle, [middle]: final },
+        remote: {},
+      }));
+      const { fetchModule: fetchLockedModule } = await import(${JSON.stringify(new URL("./fetch.ts", import.meta.url).href)});
+      await fetchLockedModule(start, { headers: {
+        Authorization: "Basic locked-caller",
+        "Proxy-Authorization": "Basic locked-proxy",
+        Cookie: "session=locked",
+        Cookie2: "legacy=locked",
+        "X-Request": "locked-chain",
+      } });
+      assert.equal(calls[4].url, final);
+      assert.equal(calls[4].headers.get("authorization"), "Bearer locked-a-token");
+      assert.equal(calls[4].headers.get("proxy-authorization"), null);
+      assert.equal(calls[4].headers.get("cookie"), null);
+      assert.equal(calls[4].headers.get("cookie2"), null);
+      assert.equal(calls[4].headers.get("x-request"), "locked-chain");
+    `;
+    const child = runAuthChild(program,
+      "source-token@source.example.test;target-token@target.example.test;locked-a-token@locked-a.example.test",
+      true, true);
+    assert.equal(child.status, 0, `${child.stderr}\n${child.stdout}`);
+  });
+
   it("rejects unsuccessful responses without preventing later downloads", async () => {
     await assert.rejects(fetchModule(`${baseUrl}/missing.mjs`));
     const result = await fetchModule(`${baseUrl}/available.mjs`);
@@ -210,9 +522,9 @@ describe("fetchModule", () => {
     assert.equal(requests.length, 4);
   });
 
-  it("cancels response-body reads without caching partial source", async () => {
+  it("times out stalled response bodies without caching partial source", async () => {
     const url = `${baseUrl}/cancelled.mjs`;
-    await assert.rejects(fetchModule(url, { signal: AbortSignal.timeout(30) }));
+    await assert.rejects(fetchModule(url, { timeoutMs: 30 }));
     assert.equal(readCache(url), null);
     assert.equal((await fetchModule(`${baseUrl}/after-cancellation.mjs`)).source, 'export default "/after-cancellation.mjs";');
   });

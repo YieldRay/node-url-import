@@ -9,13 +9,17 @@
  */
 
 import type {
-  ResolveHookContext, ResolveFnOutput, LoadHookContext, LoadFnOutput, ResolveHookSync, LoadHookSync,
+  ResolveHookContext,
+  ResolveFnOutput,
+  LoadHookContext,
+  LoadFnOutput,
+  ResolveHookSync,
+  LoadHookSync,
 } from "node:module";
 import { createRequire, isBuiltin } from "node:module";
 import { resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
-import { fetchModuleSync } from "./sync-fetch.ts";
 import { DEFAULT_CDN, isHttpUrl } from "./constants.ts";
 import { isEsmShCdn, jsrToCdnUrl } from "./jsr.ts";
 import { tmpEnabled, urlToTmpPath, writeTmpFile, tmpPathToUrl } from "./tmp.ts";
@@ -42,7 +46,7 @@ export function stripNpmSpecifier(specifier: string): string {
 function getHttpParentUrl(parentURL: string | undefined): string | null {
   if (!parentURL) return null;
   if (isHttpUrl(parentURL)) return new URL(parentURL).href;
-  const temporaryUrl = tmpEnabled ? tmpPathToUrl(parentURL) : null;
+  const temporaryUrl = tmpPathToUrl(parentURL);
   if (temporaryUrl) return temporaryUrl;
   // CJS normalizes https://host/path into file:///cwd/https:/host/path.
   const match = parentURL.match(/\/(https?:)\/([^/].*)$/);
@@ -60,10 +64,16 @@ const supportsTypeScriptFormat = (() => {
  * types, so fail explicitly rather than handing raw TypeScript to the JS parser.
  * .cts must keep CommonJS semantics even when served with a TypeScript MIME type.
  */
-function typeScriptFormat(url: string, commonjs: boolean, supported: boolean): string {
+function typeScriptFormat(
+  url: string,
+  commonjs: boolean,
+  supported: boolean,
+): string {
   if (!supported) {
-    throw new Error(`Cannot load remote TypeScript module ${url}: this Node version (${process.versions.node}) ` +
-      "does not support type stripping. Upgrade to Node 22.18+ or 24+.");
+    throw new Error(
+      `Cannot load remote TypeScript module ${url}: this Node version (${process.versions.node}) ` +
+        "does not support type stripping. Upgrade to Node 22.18+ or 24+.",
+    );
   }
   return commonjs ? "commonjs-typescript" : "module-typescript";
 }
@@ -72,54 +82,86 @@ function typeScriptFormat(url: string, commonjs: boolean, supported: boolean): s
  * Infer the module format from Content-Type and the final URL's extension.
  * tsSupported is injectable for tests and otherwise follows the running Node.
  */
-export function inferFormat(url: string, contentType: string, tsSupported = supportsTypeScriptFormat): string {
+export function inferFormat(
+  url: string,
+  contentType: string,
+  tsSupported = supportsTypeScriptFormat,
+): string {
   const type = contentType.toLowerCase();
   const pathname = new URL(url).pathname;
   if (type.includes("application/json")) return "json";
   if (type.includes("application/wasm")) return "wasm";
-  if (pathname.endsWith(".cts")) return typeScriptFormat(url, true, tsSupported);
-  if (type.includes("text/typescript") || type.includes("application/typescript")) {
+  if (pathname.endsWith(".cts"))
+    return typeScriptFormat(url, true, tsSupported);
+  if (
+    type.includes("text/typescript") ||
+    type.includes("application/typescript")
+  ) {
     return typeScriptFormat(url, false, tsSupported);
   }
   if (pathname.endsWith(".json")) return "json";
   if (pathname.endsWith(".wasm")) return "wasm";
   if (pathname.endsWith(".cjs")) return "commonjs";
-  if (/\.(?:ts|tsx|mts)$/.test(pathname)) return typeScriptFormat(url, false, tsSupported);
+  if (/\.(?:ts|tsx|mts)$/.test(pathname))
+    return typeScriptFormat(url, false, tsSupported);
   return "module";
 }
 
 type NextResolve = Parameters<ResolveHookSync>[2];
 type NextLoad = Parameters<LoadHookSync>[2];
-type ResolveHookAsync = (...args: Parameters<ResolveHookSync>) => Promise<ResolveFnOutput>;
-type LoadHookAsync = (...args: Parameters<LoadHookSync>) => Promise<LoadFnOutput>;
+type ResolveHookAsync = (
+  ...args: Parameters<ResolveHookSync>
+) => Promise<ResolveFnOutput>;
+type LoadHookAsync = (
+  ...args: Parameters<LoadHookSync>
+) => Promise<LoadFnOutput>;
 
 /** Bare packages check node_modules first, then fall back to this CDN; npm: falls back too. */
 const cdnBase = process.env.URL_IMPORT_CDN;
 /** A leading scheme excludes node:, data:, file:, npm: and other full URLs. */
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
-const projectParentUrl = (): string => pathToFileURL(resolvePath(process.cwd(), "package.json")).href;
+const projectParentUrl = (): string =>
+  pathToFileURL(resolvePath(process.cwd(), "package.json")).href;
 let resolvingLocalPackage = false;
 // Hand the already-fetched source from resolve to load, including with --reload.
 const pendingLoads = new Map<string, CacheEntry>();
 
 /** Relative and absolute-path imports resolve against the effective HTTP parent. */
 function isRelativeSpecifier(specifier: string): boolean {
-  return specifier.startsWith("./") || specifier.startsWith("../") || specifier.startsWith("/");
+  return (
+    specifier.startsWith("./") ||
+    specifier.startsWith("../") ||
+    specifier.startsWith("/")
+  );
 }
 
 /** Package names such as ws or @scope/pkg/sub, excluding paths and URL schemes. */
 function isBareSpecifier(specifier: string): boolean {
-  return !specifier.startsWith("#") && !isRelativeSpecifier(specifier) && !SCHEME_RE.test(specifier);
+  return (
+    !specifier.startsWith("#") &&
+    !isRelativeSpecifier(specifier) &&
+    !SCHEME_RE.test(specifier)
+  );
 }
 
 function normalizeWindowsPath(url: string): string {
-  return process.platform === "win32" && /^[a-zA-Z]:[\\/]/.test(url) ? pathToFileURL(url).href : url;
+  return process.platform === "win32" && /^[a-zA-Z]:[\\/]/.test(url)
+    ? pathToFileURL(url).href
+    : url;
 }
 
 /** Use require.resolve for npm: packages, anchored to a local caller or the project. */
-function resolveLocalPackage(specifier: string, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput {
-  const parentURL = context.parentURL && !getHttpParentUrl(context.parentURL) ? context.parentURL : projectParentUrl();
-  if (isBuiltin(specifier)) return nextResolve(specifier, { ...context, parentURL });
+function resolveLocalPackage(
+  specifier: string,
+  context: ResolveHookContext,
+  nextResolve: NextResolve,
+): ResolveFnOutput {
+  const parentURL =
+    context.parentURL && !getHttpParentUrl(context.parentURL)
+      ? context.parentURL
+      : projectParentUrl();
+  if (isBuiltin(specifier))
+    return nextResolve(specifier, { ...context, parentURL });
   resolvingLocalPackage = true;
   let resolved: string;
   try {
@@ -128,28 +170,55 @@ function resolveLocalPackage(specifier: string, context: ResolveHookContext, nex
     resolvingLocalPackage = false;
   }
   if (isHttpUrl(resolved)) {
-    throw Object.assign(new Error(`Cannot resolve local package "${specifier}"`), { code: "MODULE_NOT_FOUND" });
+    throw Object.assign(
+      new Error(`Cannot resolve local package "${specifier}"`),
+      { code: "MODULE_NOT_FOUND" },
+    );
   }
   return nextResolve(pathToFileURL(resolved).href, { ...context, parentURL });
 }
 
-function validateImportAttributes(url: string, format: string, context: ResolveHookContext | LoadHookContext): void {
+function validateImportAttributes(
+  url: string,
+  format: string,
+  context: ResolveHookContext | LoadHookContext,
+): void {
   const attributes = context.importAttributes ?? {};
   for (const name of Object.keys(attributes)) {
     if (name !== "type") {
-      throw Object.assign(new TypeError(`Unsupported import attribute "${name}" for ${url}`), { code: "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED" });
+      throw Object.assign(
+        new TypeError(`Unsupported import attribute "${name}" for ${url}`),
+        { code: "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED" },
+      );
     }
   }
   if (attributes.type !== undefined && attributes.type !== "json") {
-    throw Object.assign(new TypeError(`Unsupported import type "${attributes.type}" for ${url}`), { code: "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED" });
+    throw Object.assign(
+      new TypeError(`Unsupported import type "${attributes.type}" for ${url}`),
+      { code: "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED" },
+    );
   }
   if (attributes.type === "json" && format !== "json") {
-    throw Object.assign(new TypeError(`Import type "json" is incompatible with ${format} for ${url}`), { code: "ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE" });
+    throw Object.assign(
+      new TypeError(
+        `Import type "json" is incompatible with ${format} for ${url}`,
+      ),
+      { code: "ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE" },
+    );
   }
   // Native require(JSON) omits importAttributes; ESM supplies an object even
   // when empty. Conditions are user-configurable and cannot identify require.
-  if (format === "json" && attributes.type === undefined && context.importAttributes !== undefined) {
-    throw Object.assign(new TypeError(`JSON module ${url} requires an import attribute of type "json"`), { code: "ERR_IMPORT_ATTRIBUTE_MISSING" });
+  if (
+    format === "json" &&
+    attributes.type === undefined &&
+    context.importAttributes !== undefined
+  ) {
+    throw Object.assign(
+      new TypeError(
+        `JSON module ${url} requires an import attribute of type "json"`,
+      ),
+      { code: "ERR_IMPORT_ATTRIBUTE_MISSING" },
+    );
   }
 }
 
@@ -158,32 +227,65 @@ function validateImportAttributes(url: string, format: string, context: ResolveH
  * functions produce async hooks. All HTTP paths follow redirects before Node
  * chooses a module identity, so its relative imports use the final URL.
  */
-export function createResolve(fetchFn: (url: string) => CacheEntry, mainUrl?: string): ResolveHookSync;
-export function createResolve(fetchFn: (url: string) => Promise<CacheEntry>, mainUrl?: string): ResolveHookAsync;
-export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>, mainUrl?: string) {
-  const mainSpecifier = mainUrl ? pathToFileURL(resolvePath(mainUrl)).href : undefined;
+export function createResolve(
+  fetchFn: (url: string) => CacheEntry,
+  mainUrl?: string,
+): ResolveHookSync;
+export function createResolve(
+  fetchFn: (url: string) => Promise<CacheEntry>,
+  mainUrl?: string,
+): ResolveHookAsync;
+export function createResolve(
+  fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>,
+  mainUrl?: string,
+) {
+  const mainSpecifier = mainUrl
+    ? pathToFileURL(resolvePath(mainUrl)).href
+    : undefined;
   let mainResolved = false;
-  return function resolve(specifier: string, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput | Promise<ResolveFnOutput> {
+  return function resolve(
+    specifier: string,
+    context: ResolveHookContext,
+    nextResolve: NextResolve,
+  ): ResolveFnOutput | Promise<ResolveFnOutput> {
     // Direct URLs, relative imports, CDN packages and the CLI entry share this path.
-    const resolveHttp = (url: string): ResolveFnOutput | Promise<ResolveFnOutput> => {
-      const handleFetched = (entry: CacheEntry): ResolveFnOutput => {
+    const resolveHttp = (
+      url: string,
+    ): ResolveFnOutput | Promise<ResolveFnOutput> => {
+      const handleFetched = (entry: CacheEntry, synchronous: boolean): ResolveFnOutput => {
         const format = inferFormat(entry.finalUrl, entry.contentType);
         validateImportAttributes(entry.finalUrl, format, context);
-        if (tmpEnabled) {
+        // File URLs use Node's native CJS loader, which dispatches relative
+        // require() calls through sync hooks.
+        // Async hooks cannot intercept native require(), so retain their source path.
+        const commonjs = format === "commonjs" || format === "commonjs-typescript";
+        if (tmpEnabled || (synchronous && commonjs)) {
+          verifyModuleLock(entry);
           const temporaryPath = urlToTmpPath(entry.finalUrl, entry.contentType);
           writeTmpFile(temporaryPath, entry.source);
-          return { shortCircuit: true, url: pathToFileURL(temporaryPath).href, format };
+          return {
+            shortCircuit: true,
+            url: pathToFileURL(temporaryPath).href,
+            format,
+          };
         }
         pendingLoads.set(entry.finalUrl, entry);
         return { shortCircuit: true, url: entry.finalUrl, format };
       };
       const entry = fetchFn(url);
-      return entry instanceof Promise ? entry.then(handleFetched) : handleFetched(entry);
+      return entry instanceof Promise
+        ? entry.then((entry) => handleFetched(entry, false))
+        : handleFetched(entry, true);
     };
 
     // Redirect only this process's exact placeholder entry, never another
     // parentless resolve (for example a Worker entry or a later preload).
-    if (mainUrl && !mainResolved && !context.parentURL && specifier === mainSpecifier) {
+    if (
+      mainUrl &&
+      !mainResolved &&
+      !context.parentURL &&
+      specifier === mainSpecifier
+    ) {
       mainResolved = true;
       return resolveHttp(mainUrl);
     }
@@ -194,44 +296,98 @@ export function createResolve(fetchFn: (url: string) => CacheEntry | Promise<Cac
       try {
         return resolveLocalPackage(bare, context, nextResolve);
       } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "MODULE_NOT_FOUND")) throw error;
+        if (
+          !(
+            error instanceof Error &&
+            "code" in error &&
+            error.code === "MODULE_NOT_FOUND"
+          )
+        )
+          throw error;
         return resolveHttp((cdnBase ?? DEFAULT_CDN) + specifier.slice(4));
       }
     }
 
     // esm.sh is the only supported CDN with a /jsr/ endpoint.
     if (specifier.startsWith("jsr:")) {
-      if (cdnBase && isEsmShCdn(cdnBase)) return resolveHttp(jsrToCdnUrl(specifier, cdnBase));
-      throw new Error(`Cannot resolve "${specifier}": jsr: specifiers require --cdn=https://esm.sh/.`);
+      if (cdnBase && isEsmShCdn(cdnBase))
+        return resolveHttp(jsrToCdnUrl(specifier, cdnBase));
+      throw new Error(
+        `Cannot resolve "${specifier}": jsr: specifiers require --cdn=https://esm.sh/.`,
+      );
     }
     if (isHttpUrl(specifier)) return resolveHttp(specifier);
 
     const httpParent = getHttpParentUrl(context.parentURL);
-    if (cdnBase && !resolvingLocalPackage && isBareSpecifier(specifier) && !isBuiltin(specifier)) {
+    if (
+      cdnBase &&
+      !resolvingLocalPackage &&
+      isBareSpecifier(specifier) &&
+      !isBuiltin(specifier)
+    ) {
       // node_modules first; only a missing package falls back to the CDN.
       // ESM resolution reports ERR_MODULE_NOT_FOUND, CJS reports MODULE_NOT_FOUND.
-      const localContext = context.parentURL && !httpParent ? context : { ...context, parentURL: projectParentUrl() };
+      const localContext =
+        context.parentURL && !httpParent
+          ? context
+          : { ...context, parentURL: projectParentUrl() };
       try {
         return nextResolve(specifier, localContext);
       } catch (error) {
-        if (!(error instanceof Error && "code" in error && (error.code === "MODULE_NOT_FOUND" || error.code === "ERR_MODULE_NOT_FOUND"))) throw error;
+        if (
+          !(
+            error instanceof Error &&
+            "code" in error &&
+            (error.code === "MODULE_NOT_FOUND" ||
+              error.code === "ERR_MODULE_NOT_FOUND")
+          )
+        )
+          throw error;
         return resolveHttp(cdnBase + specifier);
       }
     }
-    if (httpParent && isRelativeSpecifier(specifier)) return resolveHttp(new URL(specifier, httpParent).href);
+    if (httpParent && isRelativeSpecifier(specifier))
+      return resolveHttp(new URL(specifier, httpParent).href);
     // Native package resolution cannot use an HTTP parent. Keep its import/
     // require conditions but anchor it to the local project's node_modules.
-    if (httpParent) return nextResolve(specifier, { ...context, parentURL: projectParentUrl() });
+    if (httpParent)
+      return nextResolve(specifier, {
+        ...context,
+        parentURL: projectParentUrl(),
+      });
     return nextResolve(specifier, context);
   };
 }
 
 /** Create a load hook that supplies verified remote source bytes and their format. */
 export function createLoad(fetchFn: (url: string) => CacheEntry): LoadHookSync;
-export function createLoad(fetchFn: (url: string) => Promise<CacheEntry>): LoadHookAsync;
-export function createLoad(fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>) {
-  return function load(url: string, context: LoadHookContext, nextLoad: NextLoad): LoadFnOutput | Promise<LoadFnOutput> {
-    if (!isHttpUrl(url)) return nextLoad(normalizeWindowsPath(url), context);
+export function createLoad(
+  fetchFn: (url: string) => Promise<CacheEntry>,
+): LoadHookAsync;
+export function createLoad(
+  fetchFn: (url: string) => CacheEntry | Promise<CacheEntry>,
+) {
+  return function load(
+    url: string,
+    context: LoadHookContext,
+    nextLoad: NextLoad,
+  ): LoadFnOutput | Promise<LoadFnOutput> {
+    if (!isHttpUrl(url)) {
+      // Importing a materialized .cts must enter the native CJS loader. It
+      // strips the original TypeScript bytes using the file's .cts extension.
+      // Native require() already selects that loader and keeps its TS format.
+      if (
+        context.format === "commonjs-typescript" &&
+        context.importAttributes !== undefined &&
+        tmpPathToUrl(url)
+      ) {
+        return nextLoad(normalizeWindowsPath(url), {
+          ...context,
+          format: "commonjs",
+        });
+      }
+      return nextLoad(normalizeWindowsPath(url), context);
+    }
     const cached = pendingLoads.get(url);
     pendingLoads.delete(url);
     const handleFetched = (entry: CacheEntry): LoadFnOutput => {
@@ -241,10 +397,8 @@ export function createLoad(fetchFn: (url: string) => CacheEntry | Promise<CacheE
       return { shortCircuit: true, format, source: entry.source };
     };
     const entry = cached ?? fetchFn(url);
-    return entry instanceof Promise ? entry.then(handleFetched) : handleFetched(entry);
+    return entry instanceof Promise
+      ? entry.then(handleFetched)
+      : handleFetched(entry);
   };
 }
-
-// Ready-made synchronous hooks for module.registerHooks().
-export const resolve = createResolve(fetchModuleSync);
-export const load = createLoad(fetchModuleSync);
